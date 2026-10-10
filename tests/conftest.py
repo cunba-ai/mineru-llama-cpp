@@ -5,8 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from mineru_llama_cpp import Engine
-
 MODEL = os.environ.get(
     "MINERU_LLAMA_CPP_TEST_MODEL",
     "/Users/jinzhenj/.mineru/models/MinerU2.5-Pro-2605-1.2B-Q8_0.gguf",
@@ -48,6 +46,9 @@ def engine():
     slow). n_parallel=4 so concurrency tests (Task 24) have multiple slots
     to work with; this is harmless for tests that only ever issue one
     request at a time."""
+    # 只有模型用例才加载原生包，发布策略测试可在未安装 wheel 的汇总环境收集。
+    from mineru_llama_cpp import Engine
+
     eng = Engine(MODEL, MMPROJ, n_ctx_seq=8192, n_gpu_layers=99, n_parallel=4)
     yield eng
     eng.close()

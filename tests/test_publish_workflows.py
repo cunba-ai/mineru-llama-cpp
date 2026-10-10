@@ -15,6 +15,24 @@ import yaml
 WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 
+def test_publishing_collection_does_not_import_native_package(tmp_path):
+    """用禁止导入的影子包模拟汇总环境，确保发布检查不依赖原生扩展。"""
+    (tmp_path / "mineru_llama_cpp.py").write_text(
+        'raise AssertionError("publishing checks must not import the native package")\n',
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(tmp_path), environment.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(Path(__file__).resolve()), "-q",
+         "-k", "test_runtime_diagnostic_validates_id_before_downloading"],
+        cwd=WORKFLOWS.parents[1], env=environment, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def load_workflow(filename):
     """读取真实工作流，使回归测试执行发布配置中的筛选脚本。"""
     return yaml.safe_load((WORKFLOWS / filename).read_text(encoding="utf-8"))
