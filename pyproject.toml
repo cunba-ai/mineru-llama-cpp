@@ -4,10 +4,16 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "mineru-llama-cpp"
-version = "0.1.4"
+version = "0.1.5"
 description = "In-process llama.cpp VLM inference engine for MinerU"
+readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/opendatalab/mineru-llama-cpp"
+Issues = "https://github.com/opendatalab/mineru-llama-cpp/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=7.0", "pytest-asyncio>=0.23", "pillow", "setuptools", "packaging", "PyYAML>=6.0"]
@@ -17,7 +23,10 @@ cmake.build-type = "Release"
 cmake.version = ">=3.26"
 wheel.py-api = "cp310"
 wheel.packages = ["src/mineru_llama_cpp"]
+wheel.license-files = ["LICENSE"]
 build-dir = "build"
+# 显式将本项目许可证纳入源码包，与 wheel 中的许可声明保持一致。
+sdist.include = ["LICENSE"]
 # 排除源码中的 editable 原生产物；wheel 扩展始终由 CMake install 提供。
 sdist.exclude = ["src/mineru_llama_cpp/*.so", "src/mineru_llama_cpp/*.pyd"]
 
