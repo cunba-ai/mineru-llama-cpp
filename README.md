@@ -44,7 +44,8 @@ The next release targets five `cp311-abi3` wheels. A wheel is reused across
 standard, GIL-enabled CPython 3.11–3.14, with installation tests on each
 version. Install a built wheel with
 `python -m pip install /path/to/mineru_llama_cpp-<version>-cp311-abi3-<platform>.whl`.
-Previously released 0.1.5 wheels retain their `cp310-abi3` tags and six-platform
+Previously released [0.1.5 wheels](https://github.com/opendatalab/mineru-llama-cpp/releases/tag/v0.1.5)
+retain their `cp310-abi3` tags and six-platform
 matrix; this support change applies to new builds. Validation for the new
 baseline is recorded in [the Python 3.11 migration report](docs/python311-platform-validation.md).
 
