@@ -5,7 +5,7 @@ In-process llama.cpp VLM inference engine for MinerU, exposing a single
 Wraps a pinned build of [llama.cpp](https://github.com/ggml-org/llama.cpp)
 (no HTTP layer, no subprocess) via the CPython Limited API.
 
-Version 0.1.3 pins llama.cpp to `86a283532072722c5f3363d37d59a874d09fa99b`
+Version 0.1.4 pins llama.cpp to `86a283532072722c5f3363d37d59a874d09fa99b`
 and uses the CPython 3.10 stable ABI. macOS source builds and wheels require
 macOS 14 or newer. Older 0.1.2 wheels retain their original upstream version
 and deployment targets.
@@ -40,11 +40,11 @@ Key build decisions (all in top-level `CMakeLists.txt`):
 
 ## CI wheels
 
-Version 0.1.3 targets six `cp310-abi3` wheels. A wheel is reused across
+Version 0.1.4 targets six `cp310-abi3` wheels. A wheel is reused across
 standard, GIL-enabled CPython 3.10–3.14, with installation tests on each
 version. Download the wheel matching your platform from the
-[0.1.3 GitHub Release](https://github.com/opendatalab/mineru-llama-cpp/releases/tag/v0.1.3)
-and install it with `python -m pip install /path/to/mineru_llama_cpp-0.1.3-*.whl`.
+[0.1.4 GitHub Release](https://github.com/opendatalab/mineru-llama-cpp/releases/tag/v0.1.4)
+and install it with `python -m pip install /path/to/mineru_llama_cpp-0.1.4-*.whl`.
 The older 0.1.2 wheels predate this migration.
 
 | Platform | Wheel platform tag | Packaged backends | External GPU requirements |

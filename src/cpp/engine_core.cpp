@@ -124,6 +124,7 @@ void log_packaged_backend_status(const std::filesystem::path & directory) {
     }
 }
 
+// CPU 请求只加载计算后端，其余请求沿用完整后端发现流程。
 void load_packaged_backends_from(const std::filesystem::path & directory, bool cpu_only) {
     if (cpu_only) {
         ggml_backend_load_cpu_from_path(directory.string().c_str());

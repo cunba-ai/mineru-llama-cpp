@@ -13,6 +13,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux-only CPU 
 
 @pytest.fixture(scope="session")
 def cpu_topology_probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """编译直接复用生产拓扑计数逻辑的原生测试程序。"""
     root = Path(__file__).resolve().parents[1]
     executable = tmp_path_factory.mktemp("cpu_topology") / "probe"
     subprocess.run(
@@ -52,4 +53,5 @@ def cpu_topology_probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
     ],
 )
 def test_hybrid_core_count_and_affinity(cpu_topology_probe: Path, scenario: str) -> None:
+    """验证不同 SMT 拓扑、亲和性限制和失败恢复场景。"""
     subprocess.run([str(cpu_topology_probe), scenario], check=True)

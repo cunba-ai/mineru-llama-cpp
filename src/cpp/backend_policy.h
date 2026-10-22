@@ -20,7 +20,7 @@ inline std::string canonical_backend_name(std::string name) {
     return name == "mtl" ? "metal" : name;
 }
 
-// Validate before loading any optional runtime, including when zero layers force CPU.
+// 加载可选运行库前校验后端配置，零 GPU 层数强制 CPU 时也保持校验。
 inline bool requests_cpu_backend(const std::string & requested, bool force_cpu) {
     if (requested != "auto" && requested != "cpu" && requested != "metal" && requested != "vulkan")
         throw std::invalid_argument("MINERU_LLAMA_CPP_BACKEND must be auto, cpu, vulkan or metal");

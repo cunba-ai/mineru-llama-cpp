@@ -27,10 +27,12 @@ struct fake_probe {
     int fallback_calls = 0;
     bool affinity_failure = false;
 
+    // 初始化模拟的原始及当前线程亲和性。
     fake_probe() {
         CPU_ZERO(&original);
         CPU_ZERO(&current);
     }
+    // 添加模拟核心及其 SMT 兄弟拓扑，并设置允许访问的 CPU。
     void add(int cpu, bool efficiency, const std::string & siblings, bool allowed = true) {
         cpus.emplace(cpu, core{efficiency, siblings});
         if (allowed) {
@@ -38,10 +40,12 @@ struct fake_probe {
             CPU_SET(cpu, &current);
         }
     }
+    // 返回原始亲和性，并支持模拟读取失败。
     bool get_affinity(cpu_set_t & mask) {
         mask = original;
         return !affinity_failure;
     }
+    // 记录亲和性恢复次数，并支持模拟临时恢复失败。
     bool set_affinity(const cpu_set_t & mask) {
         ++restore_calls;
         if (restore_failures > 0) {
@@ -51,6 +55,7 @@ struct fake_probe {
         current = mask;
         return true;
     }
+    // 模拟绑核并记录访问顺序，支持指定 CPU 绑核失败。
     bool pin_cpu(int cpu) {
         assert(CPU_ISSET(cpu, &original));
         visited.push_back(cpu);
@@ -62,7 +67,9 @@ struct fake_probe {
         current_cpu = cpu;
         return true;
     }
+    // 返回当前模拟核心是否为能效核。
     bool is_efficiency_core() { return cpus.at(current_cpu).efficiency; }
+    // 返回 SMT 兄弟拓扑，并注入读取失败或异常。
     bool thread_siblings(int cpu, std::string & out) {
         if (cpu == throw_on_read) {
             throw std::runtime_error("simulated read failure");
@@ -70,12 +77,14 @@ struct fake_probe {
         out = cpus.at(cpu).siblings;
         return cpu != read_failure;
     }
+    // 返回模拟物理核数，同时记录回退调用。
     int physical_cores() {
         ++fallback_calls;
         return physical;
     }
 };
 
+// 按场景验证物理 P 核计数、亲和性恢复及失败回退。
 int main(int argc, char ** argv) {
     assert(argc == 2);
     const std::string scenario = argv[1];

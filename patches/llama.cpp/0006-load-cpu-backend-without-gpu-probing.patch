@@ -5,7 +5,7 @@ diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
      // Load all known backends from dynamic libraries
      GGML_API void               ggml_backend_load_all(void);
      GGML_API void               ggml_backend_load_all_from_path(const char * dir_path);
-+    // Load CPU compute backends without probing optional GPU runtimes.
++    // 只加载 CPU 计算后端，不探测可选 GPU 运行库。
 +    GGML_API void               ggml_backend_load_cpu_from_path(const char * dir_path);
  
      //
@@ -19,7 +19,7 @@ diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
      return get_reg().load_backend(best_path, silent);
 +}
 +
-+void ggml_backend_load_cpu_from_path(const char * dir_path) {
++void ggml_backend_load_cpu_from_path(const char * dir_path) { // 按评分加载 CPU 变体并保留可选 BLAS。
 +    ggml_backend_load_best("blas", false, dir_path);
 +    ggml_backend_load_best("cpu", false, dir_path);
  }

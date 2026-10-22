@@ -12,6 +12,7 @@ import pytest
 
 @pytest.fixture(scope="session")
 def backend_marker(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """构建记录可选后端探测行为的原生标记模块。"""
     from setuptools import Distribution, Extension
     from setuptools.command.build_ext import build_ext
 
@@ -33,6 +34,7 @@ def backend_marker(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def subprocess_environment(package_parent: Path) -> dict[str, str]:
+    """清理外部运行库变量，使子进程只使用指定安装包。"""
     environment = dict(os.environ)
     for name in ("LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "GGML_BACKEND_PATH", "MINERU_LLAMA_CPP_BACKEND"):
         environment.pop(name, None)
@@ -54,6 +56,7 @@ def subprocess_environment(package_parent: Path) -> dict[str, str]:
 def test_cpu_requests_skip_optional_backends(
     tmp_path: Path, backend_marker: Path, backend: str, layers: int, probes_gpu: bool, error: str
 ) -> None:
+    """验证 CPU 请求和无效配置不会触发可选 GPU 后端探测。"""
     import mineru_llama_cpp
 
     source = Path(mineru_llama_cpp.__file__).resolve().parent
@@ -89,6 +92,7 @@ else:
 
 
 def test_cpu_variant_is_selected_without_base_module(tmp_path: Path) -> None:
+    """验证缺少基础 CPU 模块时仍能选择可用的 CPU 变体。"""
     import mineru_llama_cpp
 
     source = Path(mineru_llama_cpp.__file__).resolve().parent
@@ -116,6 +120,7 @@ else:
 
 @pytest.mark.skipif(sys.platform != "linux", reason="ELF runtime isolation is Linux-specific")
 def test_private_runtime_symbols_are_not_exported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """验证 Linux 库不会导出可能干扰进程的私有 C++ 运行库符号。"""
     import mineru_llama_cpp
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "tools"))
@@ -128,6 +133,7 @@ def test_private_runtime_symbols_are_not_exported(monkeypatch: pytest.MonkeyPatc
 @pytest.mark.skipif(sys.platform != "linux", reason="LLVM regression reproduces Linux dynamic symbol binding")
 @pytest.mark.parametrize("native_first", [True, False])
 def test_native_and_llvm_import_order(native_first: bool) -> None:
+    """验证原生包与系统 LLVM 的两种加载顺序均可正常完成。"""
     import mineru_llama_cpp
 
     directories = [Path("/usr/lib"), Path("/usr/lib64")]

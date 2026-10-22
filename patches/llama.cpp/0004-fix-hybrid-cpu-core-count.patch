@@ -28,21 +28,21 @@ index 48caa80c1..f62295969 100644
 -        ++cpu; // hyperthreading isn't useful for linear algebra
 -        ++result;
 +struct linux_hybrid_cpu_probe {
-+    bool get_affinity(cpu_set_t & mask) {
++    bool get_affinity(cpu_set_t & mask) { // 读取调用线程的原始亲和性。
 +        return pthread_getaffinity_np(pthread_self(), sizeof(mask), &mask) == 0;
      }
 -    return result;
 -}
-+    bool set_affinity(const cpu_set_t & mask) {
++    bool set_affinity(const cpu_set_t & mask) { // 恢复调用线程的亲和性。
 +        return pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) == 0;
 +    }
-+    bool pin_cpu(int cpu) { return ::pin_cpu(cpu) == 0; }
-+    bool is_efficiency_core() { return is_running_on_efficiency_core(); }
-+    bool thread_siblings(int cpu, std::string & siblings) {
++    bool pin_cpu(int cpu) { return ::pin_cpu(cpu) == 0; } // 临时绑定待探测 CPU。
++    bool is_efficiency_core() { return is_running_on_efficiency_core(); } // 识别当前能效核。
++    bool thread_siblings(int cpu, std::string & siblings) { // 读取内核提供的 SMT 兄弟掩码。
 +        std::ifstream file("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings");
 +        return static_cast<bool>(std::getline(file, siblings));
 +    }
-+    int32_t physical_cores() { return common_cpu_get_num_physical_cores(); }
++    int32_t physical_cores() { return common_cpu_get_num_physical_cores(); } // 沿用物理核数回退。
 +};
  
  #endif // __x86_64__ && __linux__
@@ -88,17 +88,17 @@ index 000000000..3ddffd90e
 +template <typename Probe>
 +class common_cpu_affinity_guard {
 +public:
-+    common_cpu_affinity_guard(Probe & probe, const cpu_set_t & affinity) : probe(probe), affinity(affinity) {}
-+    common_cpu_affinity_guard(const common_cpu_affinity_guard &) = delete;
-+    common_cpu_affinity_guard & operator=(const common_cpu_affinity_guard &) = delete;
++    common_cpu_affinity_guard(Probe & probe, const cpu_set_t & affinity) : probe(probe), affinity(affinity) {} // 保存待恢复的亲和性。
++    common_cpu_affinity_guard(const common_cpu_affinity_guard &) = delete; // 禁止复制守卫。
++    common_cpu_affinity_guard & operator=(const common_cpu_affinity_guard &) = delete; // 禁止转移恢复责任。
 +
-+    ~common_cpu_affinity_guard() {
++    ~common_cpu_affinity_guard() { // 异常退出或首次恢复失败时兜底恢复亲和性。
 +        if (!restored) {
 +            probe.set_affinity(affinity);
 +        }
 +    }
 +
-+    bool restore() {
++    bool restore() { // 显式恢复并记录结果，失败时由析构再试一次。
 +        restored = probe.set_affinity(affinity);
 +        return restored;
 +    }
@@ -110,7 +110,7 @@ index 000000000..3ddffd90e
 +};
 +
 +template <typename Probe>
-+int32_t common_cpu_count_hybrid(Probe & probe) {
++int32_t common_cpu_count_hybrid(Probe & probe) { // 按 SMT 拓扑去重 P 核，失败时使用受限回退值。
 +    cpu_set_t affinity;
 +    if (!probe.get_affinity(affinity)) {
 +        return probe.physical_cores();

@@ -12,6 +12,7 @@ from conftest import MMPROJ, MODEL
 
 @pytest.fixture(scope="session")
 def queue_probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """链接已安装的 Linux wheel，构建队列生命周期探针。"""
     if sys.platform != "linux":
         pytest.skip("This native probe links the Linux wheel's C++ server symbols")
     import mineru_llama_cpp
@@ -44,10 +45,12 @@ def queue_probe(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.mark.parametrize("scenario", ["early-stop", "running-stop", "concurrent"])
 def test_queue_termination_is_terminal(queue_probe: Path, scenario: str) -> None:
     # Test-only deadlock guard; this probe never loads a model or runs inference.
+    """验证停止请求不会被延迟启动或并发启动覆盖。"""
     subprocess.run([str(queue_probe), scenario], check=True, timeout=30)
 
 
 def test_fresh_process_immediate_close_without_generation() -> None:
+    """在独立进程中验证模型初始化后立即关闭及重复关闭。"""
     if not Path(MODEL).is_file() or not Path(MMPROJ).is_file():
         pytest.skip("Real GGUF model and projector are required")
     import mineru_llama_cpp

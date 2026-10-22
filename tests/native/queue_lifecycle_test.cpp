@@ -3,6 +3,7 @@
 #include <string>
 #include <thread>
 
+// 覆盖提前停止、运行中停止及并发启动停止，验证停止状态不可逆。
 int main(int argc, char ** argv) {
     assert(argc == 2);
     const std::string scenario = argv[1];

@@ -104,6 +104,7 @@ def test_vulkan_dependencies_and_cpu_abi_remain_supported(wheel_tools):
 
 @pytest.mark.parametrize("symbol", ["__once_proxy", "_ZSt11__once_call", "_ZSt15__once_callable", "__cxa_throw"])
 def test_private_cpp_runtime_exports_are_rejected(wheel_tools, symbol):
+    """验证 wheel 审计会拒绝暴露私有 C++ 运行库状态的产物。"""
     _, repair = wheel_tools
     with pytest.raises(RuntimeError, match="private C\\+\\+ runtime symbols"):
         repair.validate_report({"libllama.so.0": {"needed": [], "versions": [], "runtime_exports": [symbol]}})

@@ -26,7 +26,7 @@ PRIVATE_CPP_RUNTIME_SYMBOLS = frozenset(
 
 
 def inspect_runtime_exports(path: Path) -> set[str]:
-    """Reject stateful runtime symbols interposing a process's shared libstdc++."""
+    """检查可能干扰进程共享 libstdc++ 的私有运行库状态符号。"""
     symbols = subprocess.check_output(["readelf", "--dyn-syms", "--wide", str(path)], text=True)
     exports = set()
     for line in symbols.splitlines():
