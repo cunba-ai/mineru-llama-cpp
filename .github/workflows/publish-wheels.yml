@@ -17,7 +17,7 @@ on:
       wheel_glob:
         description: 'fnmatch pattern (against the file basename) selecting which wheels to upload'
         required: false
-        default: '*cp310-abi3-*'
+        default: '*cp311-abi3-*'
 
 permissions:
   contents: read
@@ -98,7 +98,7 @@ jobs:
           PUBLISH_MODE: ${{ github.event_name }}
         run: |
           if [ "$PUBLISH_MODE" = "workflow_run" ]; then
-            WHEEL_GLOB='*cp310-abi3-*'
+            WHEEL_GLOB='*cp311-abi3-*'
           fi
           find dist -name '*.whl' ! -name "$WHEEL_GLOB" -delete
           echo "Wheels selected for upload:"

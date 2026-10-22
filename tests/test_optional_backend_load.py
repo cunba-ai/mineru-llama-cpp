@@ -12,7 +12,7 @@ def test_optional_backend_failure_keeps_cpu_available(tmp_path):
 
     root = Path(__file__).resolve().parents[1]
     extension = Extension("_optional_backend_test", [str(root / "tests/native/optional_backend_binding.cpp")],
-                          language="c++", py_limited_api=True, define_macros=[("Py_LIMITED_API", "0x030A0000")],
+                          language="c++", py_limited_api=True, define_macros=[("Py_LIMITED_API", "0x030B0000")],
                           extra_compile_args=["/std:c++17", "/utf-8"] if sys.platform == "win32" else ["-std=c++17"])
     command = build_ext(Distribution({"ext_modules": [extension]}))
     command.build_lib, command.build_temp = str(tmp_path), str(tmp_path / "temp")

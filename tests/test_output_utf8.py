@@ -19,7 +19,7 @@ def utf8_decoder(tmp_path_factory):
         "_utf8_decode_test",
         [str(root / "tests/native/utf8_decode_binding.cpp")],
         include_dirs=[str(root / "src/cpp")],
-        define_macros=[("Py_LIMITED_API", "0x030A0000")],
+        define_macros=[("Py_LIMITED_API", "0x030B0000")],
         py_limited_api=True,
         extra_compile_args=["/utf-8", "/std:c++17"] if sys.platform == "win32" else ["-std=c++17"],
         language="c++",

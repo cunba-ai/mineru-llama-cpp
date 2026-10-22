@@ -15,6 +15,9 @@ if (CMAKE_HOST_APPLE AND (NOT CMAKE_SYSTEM_NAME OR CMAKE_SYSTEM_NAME STREQUAL "D
 endif()
 project(mineru_llama_cpp CXX)
 
+# 在配置原生依赖之前执行与发布矩阵一致的 macOS 架构约束。
+include(cmake/macos_target.cmake)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -129,16 +132,9 @@ if (APPLE OR WIN32)
     set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 endif()
 
-# Apple Silicon 携带完整 Shader；Intel 默认使用 Rosetta 也能加载的 CPU 指令基线。
+# Apple Silicon 携带完整 Shader，运行时按设备能力选择 Metal 内核。
 if (APPLE)
-    if (CMAKE_OSX_ARCHITECTURES STREQUAL "x86_64" OR CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
-        # 仅有 AVX 后端时能力评分为零会使 CPU 完全不可用；保留显式构建参数覆盖。
-        foreach(feature AVX AVX2 FMA F16C BMI2)
-            set(GGML_${feature} OFF CACHE BOOL "Portable Intel Mac CPU baseline")
-        endforeach()
-    else()
-        set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "Embed Metal shader sources" FORCE)
-    endif()
+    set(GGML_METAL_EMBED_LIBRARY ON CACHE BOOL "Embed Metal shader sources" FORCE)
 endif()
 # On Linux, GGML_OPENMP defaults to ON (llama.cpp's own default) -- we
 # deliberately do NOT force it, so a builder can still override with

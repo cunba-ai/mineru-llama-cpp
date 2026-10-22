@@ -1,7 +1,8 @@
-"""验证六平台分发矩阵、稳定 ABI、Windows 架构以及 Linux 系统 ABI 下限。"""
+"""验证五平台分发矩阵、稳定 ABI、Windows 架构以及 Linux 系统 ABI 下限。"""
 
 import importlib
 import struct
+import sys
 import zipfile
 from pathlib import Path
 
@@ -29,18 +30,18 @@ def make_wheel(directory, platform, backends, extra=None):
     contents = {f"mineru_llama_cpp/_mineru_llama_cpp{extension_suffix}": bytes(data)}
     contents.update({f"mineru_llama_cpp/bin/{module_prefix}ggml-{backend}{module_suffix}": bytes(data) for backend in backends})
     contents.update(extra or {})
-    wheel = directory / f"mineru_llama_cpp-0.1.2-cp310-abi3-{platform}.whl"
+    wheel = directory / f"mineru_llama_cpp-0.1.2-cp311-abi3-{platform}.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         for name, content in contents.items():
             archive.writestr(name, content)
     return wheel
 
 
-def test_six_platform_matrix(wheel_tools, tmp_path):
-    """六平台保持完整，Linux/Windows 仅要求 CPU 和 Vulkan。"""
+def test_five_platform_matrix(wheel_tools, tmp_path):
+    """五平台保持完整，Linux/Windows 仅要求 CPU 和 Vulkan。"""
     verifier, _ = wheel_tools
     wheels = [make_wheel(tmp_path, platform, backends) for platform, backends in verifier.PLATFORMS.items()]
-    assert len(verifier.verify(wheels)) == 6
+    assert len(verifier.verify(wheels)) == 5
     assert verifier.PLATFORMS["manylinux_2_28_x86_64"] == {"cpu", "vulkan"}
     assert verifier.PLATFORMS["win_amd64"] == {"cpu", "vulkan"}
 
@@ -48,21 +49,77 @@ def test_six_platform_matrix(wheel_tools, tmp_path):
 def test_wheel_set_requires_all_platforms(wheel_tools, tmp_path):
     """自动发布仍拒绝缺少平台的集合，手动发布可以校验明确选择的子集。"""
     verifier, _ = wheel_tools
-    platform = "macosx_14_0_x86_64"
+    platform = "macosx_14_0_arm64"
     wheel = make_wheel(tmp_path, platform, verifier.PLATFORMS[platform])
-    with pytest.raises(ValueError, match="Expected six wheels"):
+    with pytest.raises(ValueError, match="Expected five wheels"):
         verifier.verify([wheel])
     assert len(verifier.verify([wheel], require_all=False)) == 1
 
 
 def test_wheel_requires_stable_abi_tag(wheel_tools, tmp_path):
-    """普通 CPython 扩展标签仍不能混入 cp310-abi3 发布集合。"""
+    """普通 CPython 扩展标签仍不能混入 cp311-abi3 发布集合。"""
     verifier, _ = wheel_tools
-    platform = "macosx_14_0_x86_64"
+    platform = "macosx_14_0_arm64"
     wheel = make_wheel(tmp_path, platform, verifier.PLATFORMS[platform])
-    wheel = wheel.rename(wheel.with_name(wheel.name.replace("cp310-abi3", "cp312-cp312")))
+    wheel = wheel.rename(wheel.with_name(wheel.name.replace("cp311-abi3", "cp312-cp312")))
     with pytest.raises(ValueError, match="Unexpected package or ABI tag"):
         verifier.verify([wheel], require_all=False)
+
+
+@pytest.mark.parametrize("tag", ["cp310-abi3", "cp312-abi3", "cp311-cp311"])
+def test_wheel_requires_python311_abi_floor(wheel_tools, tmp_path, tag):
+    """发布集合仅接受统一的 cp311-abi3 标签，不能混入旧基线或逐版本扩展。"""
+    verifier, _ = wheel_tools
+    platform = "macosx_14_0_arm64"
+    wheel = make_wheel(tmp_path, platform, verifier.PLATFORMS[platform])
+    wheel = wheel.rename(wheel.with_name(wheel.name.replace("cp311-abi3", tag)))
+    with pytest.raises(ValueError, match="Unexpected package or ABI tag"):
+        verifier.verify([wheel], require_all=False)
+
+
+@pytest.mark.parametrize("platform", [
+    "macosx_14_0_x86_64", "macosx_14_0_universal2",
+    "macosx_14_0_arm64.macosx_14_0_x86_64",
+    "macosx_14_0_arm64.macosx_14_0_universal2",
+])
+@pytest.mark.parametrize("require_all", [False, True])
+def test_macos_intel_and_universal_wheels_are_rejected(wheel_tools, tmp_path, platform, require_all):
+    """完整集合和手动子集均拒绝 Intel 标签，包括伪装成 arm64 的压缩标签。"""
+    verifier, _ = wheel_tools
+    wheel = make_wheel(tmp_path, platform, {"cpu", "metal"})
+    with pytest.raises(ValueError, match="Unsupported platform"):
+        verifier.verify([wheel], require_all=require_all)
+
+
+@pytest.mark.parametrize("platform", ["macosx_14_0_x86_64", "macosx_14_0_universal2"])
+def test_macos_audit_rejects_unsupported_wheel_before_unpacking(wheel_tools, tmp_path, monkeypatch, platform):
+    """macOS 专项审计在调用系统工具前即拒绝已移除的平台。"""
+    auditor = importlib.import_module("verify_macos_wheel")
+    wheel = tmp_path / f"mineru_llama_cpp-0.1.5-cp311-abi3-{platform}.whl"
+    monkeypatch.setattr(sys, "argv", ["verify_macos_wheel.py", str(wheel)])
+    with pytest.raises(AssertionError, match="expected macosx_14_0_arm64 wheel"):
+        auditor.main()
+
+
+@pytest.mark.parametrize("platform", ["macosx_14_0_x86_64", "macosx_14_0_universal2"])
+def test_macos_audit_rejects_hidden_metadata_architecture(wheel_tools, tmp_path, monkeypatch, platform):
+    """arm64 文件名不能掩盖 WHEEL 元数据额外宣称的 Intel 或通用架构。"""
+    auditor = importlib.import_module("verify_macos_wheel")
+    metadata = f"Wheel-Version: 1.0\nTag: cp311-abi3-macosx_14_0_arm64\nTag: cp311-abi3-{platform}\n"
+    wheel = make_wheel(tmp_path, "macosx_14_0_arm64", {"cpu", "metal"},
+                       {"mineru_llama_cpp-0.1.2.dist-info/WHEEL": metadata})
+    monkeypatch.setattr(sys, "argv", ["verify_macos_wheel.py", str(wheel)])
+    with pytest.raises(AssertionError, match=platform):
+        auditor.main()
+
+
+@pytest.mark.parametrize("architectures", ["x86_64", "arm64 x86_64"])
+def test_macos_audit_rejects_non_arm64_binary(wheel_tools, tmp_path, monkeypatch, architectures):
+    """即使 wheel 标签合法，Mach-O 中混入 Intel 切片也不能通过原生审计。"""
+    auditor = importlib.import_module("verify_macos_wheel")
+    monkeypatch.setattr(auditor.subprocess, "check_output", lambda *args, **kwargs: architectures)
+    with pytest.raises(AssertionError, match="unexpected architectures"):
+        auditor.inspect_binary(tmp_path / "libggml-cpu.so", "arm64")
 
 
 def test_wheel_requires_configured_backend_modules(wheel_tools, tmp_path):

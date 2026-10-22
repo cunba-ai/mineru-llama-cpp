@@ -24,7 +24,7 @@ def backend_marker(tmp_path_factory: pytest.TempPathFactory) -> Path:
         [str(root / "tests/native/backend_load_marker.cpp")],
         language="c++",
         py_limited_api=True,
-        define_macros=[("Py_LIMITED_API", "0x030A0000")],
+        define_macros=[("Py_LIMITED_API", "0x030B0000")],
         extra_compile_args=["/std:c++17", "/utf-8"] if sys.platform == "win32" else ["-std=c++17"],
     )
     command = build_ext(Distribution({"ext_modules": [extension]}))

@@ -1,4 +1,4 @@
-"""审计六平台 abi3 产物的标签、架构和必需模块，发布前拒绝缺包和 ABI 混入。"""
+"""审计五平台 abi3 产物的标签、架构和必需模块，发布前拒绝缺包和 ABI 混入。"""
 from __future__ import annotations
 import argparse
 import json
@@ -13,7 +13,6 @@ PLATFORMS = {
     "win_amd64": {"cpu", "vulkan"},
     "win_arm64": {"cpu", "vulkan"},
     "macosx_14_0_arm64": {"cpu", "metal"},
-    "macosx_14_0_x86_64": {"cpu"},
 }
 EXTERNAL_LINUX_PREFIXES = ("libvulkan.so",)
 
@@ -26,11 +25,12 @@ def verify(wheels: list[Path], require_all: bool = True) -> list[dict]:
     for wheel in wheels:
         name, version, _, tags = parse_wheel_filename(wheel.name)
         versions.add(version)
-        if name != "mineru-llama-cpp" or any(tag.interpreter != "cp310" or tag.abi != "abi3" for tag in tags):
+        if name != "mineru-llama-cpp" or any(tag.interpreter != "cp311" or tag.abi != "abi3" for tag in tags):
             raise ValueError(f"Unexpected package or ABI tag: {wheel.name}")
         platforms = {tag.platform for tag in tags}
         matched = platforms.intersection(PLATFORMS)
-        if len(matched) != 1 or any("musllinux" in tag for tag in platforms):
+        if (len(matched) != 1 or any("musllinux" in tag for tag in platforms)
+                or any(tag.startswith("macosx_") and tag != "macosx_14_0_arm64" for tag in platforms)):
             raise ValueError(f"Unsupported platform: {wheel.name}")
         platform = matched.pop()
         if platform in seen:
@@ -61,7 +61,7 @@ def verify(wheels: list[Path], require_all: bool = True) -> list[dict]:
     if not wheels or len(versions) != 1:
         raise ValueError("Wheel set is empty or combines different versions")
     if require_all and seen != set(PLATFORMS):
-        raise ValueError(f"Expected six wheels; missing {set(PLATFORMS) - seen}")
+        raise ValueError(f"Expected five wheels; missing {set(PLATFORMS) - seen}")
     return reports
 
 

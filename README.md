@@ -5,8 +5,8 @@ In-process llama.cpp VLM inference engine for MinerU, exposing a single
 Wraps a pinned build of [llama.cpp](https://github.com/ggml-org/llama.cpp)
 (no HTTP layer, no subprocess) via the CPython Limited API.
 
-Version 0.1.5 pins llama.cpp to `86a283532072722c5f3363d37d59a874d09fa99b`
-and uses the CPython 3.10 stable ABI. macOS source builds and wheels require
+The current source pins llama.cpp to `86a283532072722c5f3363d37d59a874d09fa99b`
+and uses the CPython 3.11 stable ABI. macOS source builds and wheels require
 macOS 14 or newer. Older 0.1.2 wheels retain their original upstream version
 and deployment targets.
 
@@ -40,12 +40,13 @@ Key build decisions (all in top-level `CMakeLists.txt`):
 
 ## CI wheels
 
-Version 0.1.5 targets six `cp310-abi3` wheels. A wheel is reused across
-standard, GIL-enabled CPython 3.10–3.14, with installation tests on each
-version. Download the wheel matching your platform from the
-[0.1.5 GitHub Release](https://github.com/opendatalab/mineru-llama-cpp/releases/tag/v0.1.5)
-and install it with `python -m pip install /path/to/mineru_llama_cpp-0.1.5-*.whl`.
-The older 0.1.2 wheels predate this migration.
+The next release targets five `cp311-abi3` wheels. A wheel is reused across
+standard, GIL-enabled CPython 3.11–3.14, with installation tests on each
+version. Install a built wheel with
+`python -m pip install /path/to/mineru_llama_cpp-<version>-cp311-abi3-<platform>.whl`.
+Previously released 0.1.5 wheels retain their `cp310-abi3` tags and six-platform
+matrix; this support change applies to new builds. Validation for the new
+baseline is recorded in [the Python 3.11 migration report](docs/python311-platform-validation.md).
 
 | Platform | Wheel platform tag | Packaged backends | External GPU requirements |
 |---|---|---|---|
@@ -54,7 +55,6 @@ The older 0.1.2 wheels predate this migration.
 | Windows AMD64 | `win_amd64` | CPU, Vulkan | Driver; Vulkan loader |
 | Windows ARM64 | `win_arm64` | CPU, Vulkan | Native ARM64 GPU driver and Vulkan loader |
 | macOS arm64 | `macosx_14_0_arm64` | CPU, Metal | macOS 14+ |
-| macOS x86_64 | `macosx_14_0_x86_64` | CPU | macOS 14+ |
 
 Alpine/musllinux wheels are no longer built. Linux CPU wheels bundle
 `libgomp.so.1`; Linux x86_64 retains the existing x86_64-v3 CPU requirement
@@ -69,7 +69,7 @@ are not bundled. macOS keeps the existing llama.cpp Metal/CPU implementation.
 
 Every wheel is checked outside the checkout, including a child process with
 external GPU SDK search paths removed, and must load its packaged CPU
-backend. Strict ABI auditing verifies the Python 3.10 floor. macOS also audits
+backend. Strict ABI auditing verifies the Python 3.11 floor. macOS also audits
 Mach-O deployment targets and dependencies. CPU-only CI does not establish
 GPU execution or full MinerU extraction correctness; device-specific evidence
 is recorded separately in [the validation record](docs/abi3-backends-validation.md).
@@ -106,7 +106,7 @@ CPU. Explicit `vulkan` selection raises an error when unavailable.
 
 Release CI prepares a fixed Vulkan SDK and builds its backend together with
 the ggml core. No oneAPI toolkit, SYCL runtime or Level Zero SDK is used.
-The aggregate release check requires exactly six wheels and verifies their
+The aggregate release check requires exactly five wheels and verifies their
 platforms, architectures, ABI tags and required modules. The macOS build
 still includes the Xcode 16.4 compatibility check.
 
@@ -130,7 +130,7 @@ Publishing runs only in `opendatalab/mineru-llama-cpp`. Forks can
 build and validate wheels. CI obtains short-lived credentials through OIDC
 and does not use a stored PyPI API token.
 Automatic publishing starts after a successful `v*` tag build and requires
-all six wheels. The publishing workflow must be present on the upstream
+all five wheels. The publishing workflow must be present on the upstream
 default branch for its `workflow_run` trigger to operate. Ordinary branch
 builds and failed builds do not publish.
 Manual publishing accepts a successful build run from the same repository,
@@ -324,15 +324,15 @@ than CPU for small models. Set `n_gpu_layers=0` to force CPU.
 
 ### macOS
 
-Requires macOS 14+. Apple Silicon wheels embed Metal shader source and
+Requires macOS 14+, Apple Silicon, and a native arm64 Python 3.11+ interpreter.
+Intel Macs, x86_64 Python under Rosetta, and universal2 builds are no longer
+supported, including source builds. Apple Silicon wheels embed Metal shader source and
 compile it on the user's machine. M1-M4 default to ordinary Metal kernels;
 eligible M5 devices enable the tensor API only after runtime capability
 and compilation checks. Tensor compilation uses Metal 4.0 on supported
 systems; the package's minimum deployment target remains macOS 14.
-Intel wheels use CPU. Use Q8_0 models for both model and mmproj (see the
-existing BF16 limitation). OpenMP is OFF on macOS.
-Intel source builds default to a CPU instruction baseline compatible with
-Rosetta; explicit CMake feature flags can opt into AVX/FMA on capable hardware.
+Use Q8_0 models for both model and mmproj (see the existing BF16 limitation).
+OpenMP is OFF on macOS; the arm64 CPU backend remains available.
 
 To disable only the optional tensor API, set this before starting Python:
 

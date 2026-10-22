@@ -94,12 +94,12 @@ def test_runtime_diagnostic_rejects_missing_or_invalid_run_id(run_id):
 
 
 @pytest.mark.parametrize("pattern", [
-    "*cp310-abi3-*",
+    "*cp311-abi3-*",
     "*win_amd64.whl",
     "*",
     "",
-    "$(touch injection-executed)*cp310-abi3-*",
-    "`touch injection-executed`*cp310-abi3-*",
+    "$(touch injection-executed)*cp311-abi3-*",
+    "`touch injection-executed`*cp311-abi3-*",
     '*" -delete; touch injection-executed; #',
     '*" -delete\ntouch injection-executed\n#',
 ])
@@ -111,8 +111,9 @@ def test_wheel_filter_treats_input_as_data(tmp_path, pattern, mode):
     step = next(step for step in workflow["jobs"]["verify_build_wheels"]["steps"]
                 if step.get("name") == "Keep only wheels matching the pattern")
     names = [
+        "mineru_llama_cpp-0.1.2-cp311-abi3-win_amd64.whl",
+        "mineru_llama_cpp-0.1.2-cp311-abi3-macosx_14_0_arm64.whl",
         "mineru_llama_cpp-0.1.2-cp310-abi3-win_amd64.whl",
-        "mineru_llama_cpp-0.1.2-cp310-abi3-macosx_14_0_arm64.whl",
         "other-0.1.0-cp312-cp312-macosx_14_0_arm64.whl",
     ]
     dist = tmp_path / "dist"
@@ -128,7 +129,7 @@ def test_wheel_filter_treats_input_as_data(tmp_path, pattern, mode):
     subprocess.run(["bash", "-e", "-o", "pipefail", "-c", script], cwd=tmp_path,
                    env=environment, check=True, capture_output=True, text=True)
     assert not (tmp_path / "injection-executed").exists()
-    effective_pattern = "*cp310-abi3-*" if mode == "workflow_run" else pattern
+    effective_pattern = "*cp311-abi3-*" if mode == "workflow_run" else pattern
     assert sorted(path.name for path in dist.iterdir()) == sorted(
         name for name in names if fnmatch.fnmatchcase(name, effective_pattern))
 

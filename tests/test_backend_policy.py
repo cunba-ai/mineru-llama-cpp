@@ -16,7 +16,7 @@ def backend_selector(tmp_path_factory):
     output = tmp_path_factory.mktemp("backend_policy")
     extension = Extension("_backend_policy_test", [str(root / "tests/native/backend_policy_binding.cpp")],
                           include_dirs=[str(root / "src/cpp")], language="c++", py_limited_api=True,
-                          define_macros=[("Py_LIMITED_API", "0x030A0000")],
+                          define_macros=[("Py_LIMITED_API", "0x030B0000")],
                           extra_compile_args=["/std:c++17", "/utf-8"] if sys.platform == "win32" else ["-std=c++17"])
     command = build_ext(Distribution({"ext_modules": [extension]}))
     command.build_lib, command.build_temp = str(output), str(output / "temp")

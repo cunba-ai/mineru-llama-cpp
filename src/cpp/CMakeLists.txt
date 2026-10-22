@@ -1,6 +1,6 @@
-find_package(Python 3.10 REQUIRED COMPONENTS Interpreter Development.SABIModule)
+find_package(Python 3.11 REQUIRED COMPONENTS Interpreter Development.SABIModule)
 
-Python_add_library(_mineru_llama_cpp MODULE USE_SABI 3.10 WITH_SOABI
+Python_add_library(_mineru_llama_cpp MODULE USE_SABI 3.11 WITH_SOABI
     binding.cpp
     engine_core.cpp
 )

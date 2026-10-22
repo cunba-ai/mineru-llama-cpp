@@ -8,7 +8,7 @@ version = "0.1.5"
 description = "In-process llama.cpp VLM inference engine for MinerU"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = []
 
 [project.urls]
@@ -21,7 +21,7 @@ test = ["pytest>=7.0", "pytest-asyncio>=0.23", "pillow", "setuptools", "packagin
 [tool.scikit-build]
 cmake.build-type = "Release"
 cmake.version = ">=3.26"
-wheel.py-api = "cp310"
+wheel.py-api = "cp311"
 wheel.packages = ["src/mineru_llama_cpp"]
 wheel.license-files = ["LICENSE"]
 build-dir = "build"
@@ -85,9 +85,9 @@ python_files = "test_*.py"
 asyncio_mode = "auto"
 norecursedirs = ["legacy_spike"]
 
-# 六个平台各发布一个 cp310-abi3 wheel，仍在 Python 3.10–3.14 上复用并测试。
+# 五个平台各发布一个 cp311-abi3 wheel，在 Python 3.11–3.14 上复用并测试。
 [tool.cibuildwheel]
-build = "cp310-* cp311-* cp312-* cp313-* cp314-*"
+build = "cp311-* cp312-* cp313-* cp314-*"
 skip = "*-musllinux_*"
 build-frontend = "build"
 test-requires = ["pytest", "pytest-asyncio", "pillow", "setuptools", "packaging"]
@@ -103,14 +103,8 @@ before-build = "rm -rf build"
 repair-wheel-command = "python {project}/tools/repair_linux_wheel.py --wheel {wheel} --destination {dest_dir}"
 
 [tool.cibuildwheel.macos]
-archs = ["arm64", "x86_64"]
+archs = ["arm64"]
 environment = { MACOSX_DEPLOYMENT_TARGET = "14.0", SKBUILD_CMAKE_ARGS = "-DGGML_METAL=ON;-DGGML_METAL_EMBED_LIBRARY=ON" }
-
-[[tool.cibuildwheel.overrides]]
-select = "cp*-macosx_x86_64"
-inherit = { "environment" = "none", "before-all" = "none" }
-environment = { SKBUILD_CMAKE_ARGS = "-DGGML_METAL=OFF", MACOSX_DEPLOYMENT_TARGET = "14.0" }
-before-all = "brew install ninja"
 
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]

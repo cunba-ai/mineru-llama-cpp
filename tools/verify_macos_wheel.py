@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+from email.parser import Parser
 import json
 from pathlib import Path
 import re
 import subprocess
 import tempfile
 import zipfile
+
+from packaging.tags import parse_tag
 
 
 def inspect_binary(path: Path, architecture: str) -> dict:
@@ -41,15 +44,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("wheel", type=Path)
     args = parser.parse_args()
-    match = re.search(r"macosx_14_0_(arm64|x86_64)\.whl$", args.wheel.name)
-    assert match, f"expected macosx_14_0 wheel: {args.wheel}"
-    architecture = match.group(1)
+    assert args.wheel.name.endswith("-macosx_14_0_arm64.whl"), f"expected macosx_14_0_arm64 wheel: {args.wheel}"
+    architecture = "arm64"
     report = []
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         with zipfile.ZipFile(args.wheel) as wheel:
             metadata = wheel.read(next(n for n in wheel.namelist() if n.endswith(".dist-info/WHEEL"))).decode()
-            assert f"macosx_14_0_{architecture}" in metadata, metadata
+            tags = {tag for value in Parser().parsestr(metadata).get_all("Tag", []) for tag in parse_tag(value)}
+            assert tags and all(tag.platform == "macosx_14_0_arm64" for tag in tags), metadata
             wheel.extractall(root)
         for path in sorted(root.rglob("*")):
             if path.is_file() and path.read_bytes()[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
@@ -58,10 +61,7 @@ def main() -> None:
                 report.append(item)
     assert report, "wheel contains no Mach-O files"
     assert any("ggml-cpu" in item["name"] for item in report), "CPU backend missing"
-    if architecture == "arm64":
-        assert any("ggml-metal" in item["name"] for item in report), "Metal backend missing"
-    else:
-        assert not any("ggml-metal" in item["name"] for item in report), "Intel wheel should be CPU-only"
+    assert any("ggml-metal" in item["name"] for item in report), "Metal backend missing"
     print(json.dumps({"wheel": args.wheel.name, "binaries": report}, indent=2))
 
 

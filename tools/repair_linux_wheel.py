@@ -125,7 +125,7 @@ def repair(wheel: Path, destination: Path) -> None:
         validate_report(before)
         subprocess.run(command, check=True)
     except (subprocess.CalledProcessError, RuntimeError):
-        # 失败候选单独保存，不参与六平台发布集合；保留证据供完整 ABI 诊断。
+        # 失败候选单独保存，不参与五平台发布集合；保留证据供完整 ABI 诊断。
         shutil.copy2(wheel, diagnostics / wheel.name)
         subprocess.run(["auditwheel", "show", str(wheel)], check=False)
         print(json.dumps(before, indent=2), flush=True)

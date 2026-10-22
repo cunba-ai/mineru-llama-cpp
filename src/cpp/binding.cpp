@@ -204,7 +204,7 @@ int core_init(CoreObject * self, PyObject * args, PyObject * kwargs) {
 // 释放原生对象，再按堆类型规则释放包装及类型引用。
 void core_dealloc(CoreObject * self) {
     delete self->core;
-    auto * type = Py_TYPE(self);
+    auto * type = Py_TYPE(reinterpret_cast<PyObject *>(self));
     auto free_object = reinterpret_cast<freefunc>(PyType_GetSlot(type, Py_tp_free));
     free_object(reinterpret_cast<PyObject *>(self));
     Py_DECREF(type);
@@ -260,7 +260,7 @@ PyObject * core_stream(CoreObject * self, PyObject * args, PyObject * kwargs) {
         std::unique_ptr<EngineCore::StreamHandle> handle;
         try { handle = std::make_unique<EngineCore::StreamHandle>(self->core->generate_stream(body)); }
         catch (const std::exception & error) { raise_mapped_error("invalid_request_error", error.what()); }
-        auto * state = static_cast<ModuleState *>(PyType_GetModuleState(Py_TYPE(self)));
+        auto * state = static_cast<ModuleState *>(PyType_GetModuleState(Py_TYPE(reinterpret_cast<PyObject *>(self))));
         if (!state) throw PythonError{};
         auto * output = reinterpret_cast<StreamObject *>(checked(
             PyType_GenericAlloc(reinterpret_cast<PyTypeObject *>(state->stream_type), 0)));
@@ -284,7 +284,7 @@ PyObject * core_eos(CoreObject * self, void *) {
 void stream_dealloc(StreamObject * self) {
     delete self->handle;
     Py_XDECREF(self->owner);
-    auto * type = Py_TYPE(self);
+    auto * type = Py_TYPE(reinterpret_cast<PyObject *>(self));
     auto free_object = reinterpret_cast<freefunc>(PyType_GetSlot(type, Py_tp_free));
     free_object(reinterpret_cast<PyObject *>(self));
     Py_DECREF(type);
