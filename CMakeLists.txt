@@ -254,7 +254,9 @@ add_subdirectory(third_party/llama.cpp)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # llama 的 random_device 依赖 GLIBCXX_3.4.25；静态链接其 C++ 运行库以满足 2.28 策略的 3.4.24 上限。
-    target_link_options(llama PRIVATE -static-libstdc++)
+    # Keep its private runtime out of the dynamic symbol table: drivers may load
+    # another libstdc++, and interposed call_once TLS can cause a null call.
+    target_link_options(llama PRIVATE -static-libstdc++ "LINKER:--exclude-libs,libstdc++.a")
     install(DIRECTORY "${CMAKE_SOURCE_DIR}/licenses/gcc-runtime/"
         DESTINATION "mineru_llama_cpp/licenses/gcc-runtime")
 endif()

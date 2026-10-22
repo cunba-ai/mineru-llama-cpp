@@ -87,7 +87,10 @@ Automatic selection prefers discrete GPUs over integrated GPUs, then Metal
 and Vulkan within the same device class. Each engine selects one
 backend and may use multiple devices from it; its model and multimodal
 projector use that backend.
-`n_gpu_layers=0` forces CPU. Explicitly requesting an unavailable backend
+`n_gpu_layers=0` forces CPU. Explicit CPU requests load the best packaged CPU
+variant and optional CPU BLAS backend without probing GPU drivers. Backend
+configuration is still validated before loading modules, including with zero GPU layers.
+Explicitly requesting an unavailable backend
 raises an error. Removed `sycl` and `cuda` values are invalid even with
 `n_gpu_layers=0`. Errors after inference starts are surfaced without retrying
 the request on another backend. Use `verbosity=LOG_LEVEL_INFO` to see the

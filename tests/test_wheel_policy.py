@@ -1,8 +1,9 @@
 """验证六平台分发矩阵、稳定 ABI、Windows 架构以及 Linux 系统 ABI 下限。"""
+
 import importlib
-from pathlib import Path
 import struct
 import zipfile
+from pathlib import Path
 
 import pytest
 
@@ -26,8 +27,7 @@ def make_wheel(directory, platform, backends, extra=None):
     module_prefix = "" if windows else "lib"
     extension_suffix = ".pyd" if windows else ".abi3.so"
     contents = {f"mineru_llama_cpp/_mineru_llama_cpp{extension_suffix}": bytes(data)}
-    contents.update({f"mineru_llama_cpp/bin/{module_prefix}ggml-{backend}{module_suffix}": bytes(data)
-                     for backend in backends})
+    contents.update({f"mineru_llama_cpp/bin/{module_prefix}ggml-{backend}{module_suffix}": bytes(data) for backend in backends})
     contents.update(extra or {})
     wheel = directory / f"mineru_llama_cpp-0.1.2-cp310-abi3-{platform}.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
@@ -94,8 +94,16 @@ def test_wheel_rejects_wrong_windows_architecture(wheel_tools, tmp_path):
 def test_vulkan_dependencies_and_cpu_abi_remain_supported(wheel_tools):
     """Vulkan loader 仍为外部依赖，CPU 的 manylinux ABI 下限保持原规则。"""
     _, repair = wheel_tools
-    repair.validate_report({"libggml-vulkan.so": {"needed": ["libvulkan.so.1"],
-                                                  "versions": ["GLIBC_2.28", "GLIBCXX_3.4.24", "CXXABI_1.3.11"]}})
+    repair.validate_report(
+        {"libggml-vulkan.so": {"needed": ["libvulkan.so.1"], "versions": ["GLIBC_2.28", "GLIBCXX_3.4.24", "CXXABI_1.3.11"]}}
+    )
     assert repair.GPU_RUNTIME_PREFIXES == ("libvulkan.so",)
     with pytest.raises(RuntimeError, match="ABI floor"):
         repair.validate_report({"libllama.so.0": {"needed": [], "versions": ["GLIBC_2.29"]}})
+
+
+@pytest.mark.parametrize("symbol", ["__once_proxy", "_ZSt11__once_call", "_ZSt15__once_callable", "__cxa_throw"])
+def test_private_cpp_runtime_exports_are_rejected(wheel_tools, symbol):
+    _, repair = wheel_tools
+    with pytest.raises(RuntimeError, match="private C\\+\\+ runtime symbols"):
+        repair.validate_report({"libllama.so.0": {"needed": [], "versions": [], "runtime_exports": [symbol]}})

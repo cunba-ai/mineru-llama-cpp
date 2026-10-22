@@ -123,6 +123,15 @@ void log_packaged_backend_status(const std::filesystem::path & directory) {
         }
     }
 }
+
+void load_packaged_backends_from(const std::filesystem::path & directory, bool cpu_only) {
+    if (cpu_only) {
+        ggml_backend_load_cpu_from_path(directory.string().c_str());
+    } else {
+        ggml_backend_load_all_from_path(directory.string().c_str());
+        log_packaged_backend_status(directory);
+    }
+}
 #if defined(__linux__) || defined(__APPLE__)
 #if defined(__GNUC__) || defined(__clang__)
 __attribute__((noinline))
@@ -130,7 +139,7 @@ __attribute__((noinline))
 // 提供稳定地址，定位当前扩展的安装目录。
 void engine_core_module_anchor() {}
 
-void load_packaged_backends() {
+void load_packaged_backends(bool cpu_only) {
     Dl_info info{};
     if (dladdr(reinterpret_cast<void *>(&engine_core_module_anchor), &info) == 0 || !info.dli_fname) {
         return;
@@ -147,8 +156,7 @@ void load_packaged_backends() {
     std::error_code ec;
     for (const auto & candidate : candidates) {
         if (std::filesystem::is_directory(candidate, ec)) {
-            ggml_backend_load_all_from_path(candidate.string().c_str());
-            log_packaged_backend_status(candidate);
+            load_packaged_backends_from(candidate, cpu_only);
             return;
         }
         ec.clear();
@@ -162,7 +170,7 @@ void load_packaged_backends() {
 // non-static symbol (not optimized away) for its address to be meaningful.
 void engine_core_module_anchor() {}
 
-void load_packaged_backends() {
+void load_packaged_backends(bool cpu_only) {
     HMODULE hmod = nullptr;
     // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: look up the module that contains
     // the given address (here, our anchor function). FLAG_UNCHANGED_REFCOUNT
@@ -197,15 +205,14 @@ void load_packaged_backends() {
     std::error_code ec;
     for (const auto & candidate : candidates) {
         if (std::filesystem::is_directory(candidate, ec)) {
-            ggml_backend_load_all_from_path(candidate.string().c_str());
-            log_packaged_backend_status(candidate);
+            load_packaged_backends_from(candidate, cpu_only);
             return;
         }
         ec.clear();
     }
 }
 #else
-void load_packaged_backends() {}
+void load_packaged_backends(bool) {}
 #endif
 
 EngineCore::Timings extract_timings(const json & j) {
@@ -222,9 +229,7 @@ EngineCore::Timings extract_timings(const json & j) {
 }
 
 // 从已加载设备中选择一个后端，模型与视觉投影使用相同设备集合。
-void select_engine_backend(common_params & params, int requested_layers) {
-    const char * environment = std::getenv("MINERU_LLAMA_CPP_BACKEND");
-    const std::string requested = environment ? environment : "auto";
+void select_engine_backend(common_params & params, int requested_layers, const std::string & requested) {
     std::vector<mineru_llama_cpp::BackendDevice> candidates;
     for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
         auto * device = ggml_backend_dev_get(index);
@@ -263,6 +268,9 @@ void select_engine_backend(common_params & params, int requested_layers) {
 EngineCore::EngineCore(const std::string & model_path, const std::string & mmproj_path,
                         int n_ctx_seq, int n_gpu_layers, int n_parallel,
                         int32_t verbosity, int32_t n_threads) {
+    const char * environment = std::getenv("MINERU_LLAMA_CPP_BACKEND");
+    const std::string requested = environment ? environment : "auto";
+    const bool cpu_only = mineru_llama_cpp::requests_cpu_backend(requested, n_gpu_layers == 0);
     params_.model.path          = model_path;
     params_.mmproj.path         = mmproj_path;
     params_.n_gpu_layers        = n_gpu_layers;
@@ -333,7 +341,7 @@ EngineCore::EngineCore(const std::string & model_path, const std::string & mmpro
     // load_packaged_backends() first means that guard sees backends already
     // registered and skips its own (Python-interpreter-directory) search,
     // which would never find our bundled MODULEs anyway.
-    load_packaged_backends();
+    load_packaged_backends(cpu_only);
     if (!ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
         throw std::runtime_error("Packaged CPU backend is unavailable; check the installation's bin directory");
     }
@@ -341,7 +349,7 @@ EngineCore::EngineCore(const std::string & model_path, const std::string & mmpro
     llama_numa_init(params_.numa);
 
     try {
-        select_engine_backend(params_, n_gpu_layers);
+        select_engine_backend(params_, n_gpu_layers, requested);
         if (!ctx_.load_model(params_)) throw std::runtime_error("load_model failed");
     } catch (...) {
         llama_backend_free();

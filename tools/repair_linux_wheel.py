@@ -1,16 +1,44 @@
 """审计 Linux ELF 下限，修复 wheel 时保留 Vulkan loader 作为外部依赖。"""
+
 from __future__ import annotations
+
 import argparse
 import json
 import os
-from pathlib import Path
 import re
-import subprocess
 import shutil
+import subprocess
 import tempfile
 import zipfile
+from pathlib import Path
 
 GPU_RUNTIME_PREFIXES = ("libvulkan.so",)
+PRIVATE_CPP_RUNTIME_SYMBOLS = frozenset(
+    {
+        "__once_proxy",
+        "_ZSt11__once_call",
+        "_ZSt15__once_callable",
+        "__cxa_throw",
+        "__cxa_get_globals",
+        "_ZNSt6locale7classicEv",
+    }
+)
+
+
+def inspect_runtime_exports(path: Path) -> set[str]:
+    """Reject stateful runtime symbols interposing a process's shared libstdc++."""
+    symbols = subprocess.check_output(["readelf", "--dyn-syms", "--wide", str(path)], text=True)
+    exports = set()
+    for line in symbols.splitlines():
+        fields = line.split()
+        if len(fields) < 8 or fields[4] not in {"GLOBAL", "WEAK", "UNIQUE"}:
+            continue
+        if fields[5] not in {"DEFAULT", "PROTECTED"} or fields[6] == "UND":
+            continue
+        name = fields[7].split("@", 1)[0]
+        if name in PRIVATE_CPP_RUNTIME_SYMBOLS:
+            exports.add(name)
+    return exports
 
 
 def inspect_elf(path: Path) -> tuple[set[str], set[str]]:
@@ -45,15 +73,25 @@ def inspect_wheel(wheel: Path) -> tuple[dict, set[str]]:
                     continue
             needed, versions = inspect_elf(path)
             external.update(name for name in needed if name.startswith(GPU_RUNTIME_PREFIXES))
-            report[str(path.relative_to(root))] = {"needed": sorted(needed), "versions": sorted(versions)}
+            report[str(path.relative_to(root))] = {
+                "needed": sorted(needed),
+                "versions": sorted(versions),
+                "runtime_exports": sorted(inspect_runtime_exports(path)),
+            }
     return report, external
 
 
 def validate_report(report: dict) -> None:
     """对全部 ELF 执行 manylinux_2_28 的系统 C/C++ 符号版本下限检查。"""
     for path, info in report.items():
+        if info.get("runtime_exports"):
+            raise RuntimeError(f"{path} exports private C++ runtime symbols: {info['runtime_exports']}")
         for prefix, maximum in (("GLIBC_", (2, 28)), ("GLIBCXX_", (3, 4, 24)), ("CXXABI_", (1, 3, 11))):
-            required = [tuple(map(int, value.removeprefix(prefix).split("."))) for value in info["versions"] if value.startswith(prefix) and value.removeprefix(prefix)[0].isdigit()]
+            required = [
+                tuple(map(int, value.removeprefix(prefix).split(".")))
+                for value in info["versions"]
+                if value.startswith(prefix) and value.removeprefix(prefix)[0].isdigit()
+            ]
             if any(version > maximum for version in required):
                 raise RuntimeError(f"{path} exceeds manylinux_2_28 {prefix} ABI floor: {info['versions']}")
 
@@ -63,12 +101,23 @@ def repair(wheel: Path, destination: Path) -> None:
     before, external = inspect_wheel(wheel)
     # cibuildwheel 会复制 /project；CI 证据须写回 /host 挂载的真实工作区。
     workspace = os.environ.get("GITHUB_WORKSPACE")
-    root = Path("/host") / workspace.lstrip("/") if workspace and Path("/host").is_dir() else Path(__file__).resolve().parents[1]
+    root = (
+        Path("/host") / workspace.lstrip("/") if workspace and Path("/host").is_dir() else Path(__file__).resolve().parents[1]
+    )
     diagnostics = root / "build/ci-wheel-audits"
     diagnostics.mkdir(parents=True, exist_ok=True)
-    (diagnostics / (wheel.stem + ".json")).write_text(json.dumps({"external_gpu_runtime": sorted(external), "elf": before}, indent=2))
-    command = ["auditwheel", "repair", "--plat", "manylinux_2_28_" + ("aarch64" if "aarch64" in wheel.name else "x86_64"),
-               "--disable-isa-ext-check", "-w", str(destination)]
+    (diagnostics / (wheel.stem + ".json")).write_text(
+        json.dumps({"external_gpu_runtime": sorted(external), "elf": before}, indent=2)
+    )
+    command = [
+        "auditwheel",
+        "repair",
+        "--plat",
+        "manylinux_2_28_" + ("aarch64" if "aarch64" in wheel.name else "x86_64"),
+        "--disable-isa-ext-check",
+        "-w",
+        str(destination),
+    ]
     for name in sorted(external):
         command.extend(["--exclude", name])
     command.append(str(wheel))

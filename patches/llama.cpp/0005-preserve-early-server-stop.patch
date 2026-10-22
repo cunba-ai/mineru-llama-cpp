@@ -1,0 +1,41 @@
+diff --git a/tools/server/server-queue.cpp b/tools/server/server-queue.cpp
+index 78169e9a5..82eeb18b4 100644
+--- a/tools/server/server-queue.cpp
++++ b/tools/server/server-queue.cpp
+@@ -131,6 +131,7 @@ void server_queue::wait_until_no_sleep() {
+ 
+ void server_queue::terminate() {
+     std::unique_lock<std::mutex> lock(mutex_tasks);
++    stop_requested = true;
+     running = false;
+     condition_tasks.notify_all();
+ }
+@@ -276,8 +277,14 @@ void server_queue::yield_to_queue(std::function<void()> && work) {
+ }
+ 
+ void server_queue::start_loop(int64_t idle_sleep_ms) {
+-    running = true;
+-    time_last_task = ggml_time_ms();
++    {
++        std::unique_lock<std::mutex> lock(mutex_tasks);
++        if (stop_requested) {
++            return;
++        }
++        running = true;
++        time_last_task = ggml_time_ms();
++    }
+ 
+     // spawn the worker thread used by yield_to_queue()
+     GGML_ASSERT(!worker.thread.joinable() && "start_loop() is already running");
+diff --git a/tools/server/server-queue.h b/tools/server/server-queue.h
+index e17733a74..1f5d16ce3 100644
+--- a/tools/server/server-queue.h
++++ b/tools/server/server-queue.h
+@@ -16,6 +16,7 @@ struct server_queue {
+ private:
+     int id = 0;
+     bool running  = false;
++    bool stop_requested = false; // terminal for this queue instance
+     bool sleeping = false;
+     bool req_stop_sleeping = false;
+     int64_t time_last_task = 0;

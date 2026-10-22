@@ -1,0 +1,27 @@
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -260,6 +260,8 @@
+     // Load all known backends from dynamic libraries
+     GGML_API void               ggml_backend_load_all(void);
+     GGML_API void               ggml_backend_load_all_from_path(const char * dir_path);
++    // Load CPU compute backends without probing optional GPU runtimes.
++    GGML_API void               ggml_backend_load_cpu_from_path(const char * dir_path);
+ 
+     //
+     // Backend scheduler
+diff --git a/ggml/src/ggml-backend-reg.cpp b/ggml/src/ggml-backend-reg.cpp
+--- a/ggml/src/ggml-backend-reg.cpp
++++ b/ggml/src/ggml-backend-reg.cpp
+@@ -580,6 +580,11 @@
+     }
+ 
+     return get_reg().load_backend(best_path, silent);
++}
++
++void ggml_backend_load_cpu_from_path(const char * dir_path) {
++    ggml_backend_load_best("blas", false, dir_path);
++    ggml_backend_load_best("cpu", false, dir_path);
+ }
+ 
+ void ggml_backend_load_all() {

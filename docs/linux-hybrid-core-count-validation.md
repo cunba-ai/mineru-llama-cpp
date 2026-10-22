@@ -64,6 +64,9 @@ AVX2 CPU、OpenMP 和 Vulkan 配置构建，版本仍为 0.1.3。
 已有 `server_queue::start_loop()` 和 `terminate()` 的启动/退出竞争需要另行排查，本补丁未修改该路径。
 最小生成后关闭的检查通过。本次未运行完整模型生命周期压力测试或跨平台真机测试。
 
+上述运行库加载与立即关闭问题的后续独立修复和验证见
+[`runtime-lifecycle-validation.md`](runtime-lifecycle-validation.md)；本节保留当时基线测试的实际条件。
+
 按用户后续要求取消性能测量：首轮 OCR 基线尚未完成即停止，调度器及工作进程均已终止，
 不报告耗时或性能结论。
 

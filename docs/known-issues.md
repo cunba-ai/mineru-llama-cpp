@@ -1,5 +1,32 @@
 # Known Issues
 
+## Linux runtime collisions and closing immediately after construction
+
+The 0.1.3 Linux binaries can crash during optional GPU driver initialization,
+including when the Engine ultimately selects CPU. `libllama` statically links
+libstdc++ for the manylinux ABI floor, while other modules use shared libstdc++.
+Exporting the private runtime symbols can split `std::call_once` state between
+the two copies. Loading an LLVM-based driver can then call a null function pointer.
+Changing import order may hide the problem but is not a reliable fix.
+
+Current source hides symbols from the static libstdc++ archive and audits the
+wheel for exported stateful runtime symbols. Explicit CPU requests load only
+CPU compute backends, preserving CPU variant selection and optional BLAS;
+they do not probe GPU runtimes or the generic `GGML_BACKEND_PATH` plugin.
+Auto and explicit GPU requests retain normal discovery. GPU backends already
+registered by an earlier Engine are not unloaded when a CPU Engine is created.
+
+Independently, immediate `close()` after construction can race with the native
+loop thread. A delayed `start_loop()` previously overwrote an earlier stop request.
+Current source retains that stop request under the queue mutex; termination is
+terminal for that queue instance, and destruction still joins the worker threads.
+No preliminary generation or sleep is required before closing an idle Engine.
+Closing with in-flight inference remains outside the existing supported contract.
+
+Both fixes require rebuilding and installing the complete native wheel. They do
+not change an already installed 0.1.3 binary. See
+[the runtime and lifecycle validation record](runtime-lifecycle-validation.md).
+
 ## Incomplete UTF-8 at a generation length limit
 
 [Issue #1](https://github.com/opendatalab/mineru-llama-cpp/issues/1) affects

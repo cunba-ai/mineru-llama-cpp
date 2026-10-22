@@ -20,15 +20,19 @@ inline std::string canonical_backend_name(std::string name) {
     return name == "mtl" ? "metal" : name;
 }
 
+// Validate before loading any optional runtime, including when zero layers force CPU.
+inline bool requests_cpu_backend(const std::string & requested, bool force_cpu) {
+    if (requested != "auto" && requested != "cpu" && requested != "metal" && requested != "vulkan")
+        throw std::invalid_argument("MINERU_LLAMA_CPP_BACKEND must be auto, cpu, vulkan or metal");
+    return force_cpu || requested == "cpu";
+}
+
 // 独显优先；同等级只选择一个后端，保留该后端下的多设备能力。
 inline std::vector<size_t> select_backend_devices(const std::vector<BackendDevice> & devices,
                                                 const std::string & requested,
                                                 bool force_cpu = false) {
     static const std::vector<std::string> priority = {"metal", "vulkan"};
-    if (requested != "auto" && requested != "cpu" &&
-        std::find(priority.begin(), priority.end(), requested) == priority.end())
-        throw std::invalid_argument("MINERU_LLAMA_CPP_BACKEND must be auto, cpu, vulkan or metal");
-    if (force_cpu || requested == "cpu") return {};
+    if (requests_cpu_backend(requested, force_cpu)) return {};
     for (bool integrated : {false, true}) {
         for (const auto & backend : priority) {
             if (requested != "auto" && requested != backend) continue;
