@@ -1,0 +1,155 @@
+# Linux x86 hybrid CPU：按真实 SMT 兄弟拓扑统计 P 核，保留原始亲和性。
+# Upstream 86a28353; related unmerged PR: https://github.com/ggml-org/llama.cpp/pull/21979
+diff --git a/common/common.cpp b/common/common.cpp
+index 48caa80c1..f62295969 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -150,6 +150,7 @@ int32_t common_cpu_get_num_physical_cores() {
+ }
+ 
+ #if defined(__x86_64__) && defined(__linux__) && !defined(__ANDROID__)
++#include "cpu-topology.h"
+ #include <pthread.h>
+ 
+ static void cpuid(unsigned leaf, unsigned subleaf,
+@@ -182,20 +183,21 @@ static bool is_running_on_efficiency_core(void) {
+     return core_type == intel_atom;
+ }
+ 
+-static int cpu_count_math_cpus(int n_cpu) {
+-    int result = 0;
+-    for (int cpu = 0; cpu < n_cpu; ++cpu) {
+-        if (pin_cpu(cpu)) {
+-            return -1;
+-        }
+-        if (is_running_on_efficiency_core()) {
+-            continue; // efficiency cores harm lockstep threading
+-        }
+-        ++cpu; // hyperthreading isn't useful for linear algebra
+-        ++result;
++struct linux_hybrid_cpu_probe {
++    bool get_affinity(cpu_set_t & mask) {
++        return pthread_getaffinity_np(pthread_self(), sizeof(mask), &mask) == 0;
+     }
+-    return result;
+-}
++    bool set_affinity(const cpu_set_t & mask) {
++        return pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask) == 0;
++    }
++    bool pin_cpu(int cpu) { return ::pin_cpu(cpu) == 0; }
++    bool is_efficiency_core() { return is_running_on_efficiency_core(); }
++    bool thread_siblings(int cpu, std::string & siblings) {
++        std::ifstream file("/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/thread_siblings");
++        return static_cast<bool>(std::getline(file, siblings));
++    }
++    int32_t physical_cores() { return common_cpu_get_num_physical_cores(); }
++};
+ 
+ #endif // __x86_64__ && __linux__
+ 
+@@ -204,19 +206,9 @@ static int cpu_count_math_cpus(int n_cpu) {
+  */
+ int32_t common_cpu_get_num_math() {
+ #if defined(__x86_64__) && defined(__linux__) && !defined(__ANDROID__)
+-    int n_cpu = sysconf(_SC_NPROCESSORS_ONLN);
+-    if (n_cpu < 1) {
+-        return common_cpu_get_num_physical_cores();
+-    }
+     if (is_hybrid_cpu()) {
+-        cpu_set_t affinity;
+-        if (!pthread_getaffinity_np(pthread_self(), sizeof(affinity), &affinity)) {
+-            int result = cpu_count_math_cpus(n_cpu);
+-            pthread_setaffinity_np(pthread_self(), sizeof(affinity), &affinity);
+-            if (result > 0) {
+-                return result;
+-            }
+-        }
++        linux_hybrid_cpu_probe probe;
++        return common_cpu_count_hybrid(probe);
+     }
+ #elif defined(__powerpc64__) || defined(__powerpc__)
+     int32_t smt_factor = 1;
+diff --git a/common/cpu-topology.h b/common/cpu-topology.h
+new file mode 100644
+index 000000000..3ddffd90e
+--- /dev/null
++++ b/common/cpu-topology.h
+@@ -0,0 +1,78 @@
++#pragma once
++
++// Internal Linux hybrid-CPU detection. Probe is a compile-time seam for native
++// topology tests; production always uses the Linux/CPUID implementation.
++#include <algorithm>
++#include <cstdint>
++#include <sched.h>
++#include <string>
++#include <unordered_set>
++
++template <typename Probe>
++class common_cpu_affinity_guard {
++public:
++    common_cpu_affinity_guard(Probe & probe, const cpu_set_t & affinity) : probe(probe), affinity(affinity) {}
++    common_cpu_affinity_guard(const common_cpu_affinity_guard &) = delete;
++    common_cpu_affinity_guard & operator=(const common_cpu_affinity_guard &) = delete;
++
++    ~common_cpu_affinity_guard() {
++        if (!restored) {
++            probe.set_affinity(affinity);
++        }
++    }
++
++    bool restore() {
++        restored = probe.set_affinity(affinity);
++        return restored;
++    }
++
++private:
++    Probe & probe;
++    cpu_set_t affinity;
++    bool restored = false;
++};
++
++template <typename Probe>
++int32_t common_cpu_count_hybrid(Probe & probe) {
++    cpu_set_t affinity;
++    if (!probe.get_affinity(affinity)) {
++        return probe.physical_cores();
++    }
++    const int available = CPU_COUNT(&affinity);
++    if (available == 0) {
++        return probe.physical_cores();
++    }
++
++    common_cpu_affinity_guard<Probe> restore_affinity(probe, affinity);
++    std::unordered_set<std::string> siblings_seen;
++    bool complete = true;
++    // CPU IDs need not be contiguous or smaller than the online CPU count.
++    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
++        if (!CPU_ISSET(cpu, &affinity)) {
++            continue;
++        }
++        if (!probe.pin_cpu(cpu)) {
++            complete = false;
++            break;
++        }
++        if (probe.is_efficiency_core()) {
++            continue;
++        }
++        std::string siblings;
++        if (!probe.thread_siblings(cpu, siblings) || siblings.empty()) {
++            complete = false;
++            break;
++        }
++        // A physical P core counts once, with or without SMT and regardless
++        // of how the kernel numbers its logical CPUs.
++        siblings_seen.insert(siblings);
++    }
++    if (!restore_affinity.restore()) {
++        complete = false;
++    }
++    if (complete && !siblings_seen.empty()) {
++        return static_cast<int32_t>(siblings_seen.size());
++    }
++    // Keep the existing physical-core fallback, bounded by the original mask.
++    return std::max(1, std::min(probe.physical_cores(), available));
++}
