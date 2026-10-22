@@ -1,5 +1,6 @@
 """Fresh-process checks for backend probing and private C++ runtime state."""
 
+import ctypes
 import os
 import shutil
 import subprocess
@@ -91,8 +92,8 @@ else:
     assert marker.exists() is probes_gpu
 
 
-def test_cpu_variant_is_selected_without_base_module(tmp_path: Path) -> None:
-    """验证缺少基础 CPU 模块时仍能选择可用的 CPU 变体。"""
+def test_cpu_variant_selection_requires_scoring_entrypoint(tmp_path: Path) -> None:
+    """验证可评分 CPU 变体能被选中，无评分模块不能冒充变体。"""
     import mineru_llama_cpp
 
     source = Path(mineru_llama_cpp.__file__).resolve().parent
@@ -102,19 +103,27 @@ def test_cpu_variant_is_selected_without_base_module(tmp_path: Path) -> None:
     cpu = package / "bin" / name
     if not cpu.exists():
         pytest.skip("Wheel already uses CPU variants instead of the base module")
+    # 部分 ARM 构建仅提供基础模块；改名不会为其添加变体评分入口。
+    library = ctypes.CDLL(str(source / "bin" / name))
+    expected_error = (
+        "load_model failed" if hasattr(library, "ggml_backend_score") else "Packaged CPU backend is unavailable"
+    )
     cpu.rename(cpu.with_name(cpu.stem + "-test" + cpu.suffix))
     environment = subprocess_environment(tmp_path)
     environment["MINERU_LLAMA_CPP_BACKEND"] = "cpu"
     script = """
+import sys
 from mineru_llama_cpp._mineru_llama_cpp import _EngineCore
 try:
     _EngineCore('nonexistent-model.gguf', 'nonexistent-projector.gguf', 256, 0, 1, 0, 4)
 except RuntimeError as error:
-    assert 'load_model failed' in str(error), str(error)
+    assert sys.argv[1] in str(error), str(error)
 else:
     raise AssertionError('Missing model unexpectedly loaded')
 """
-    result = subprocess.run([sys.executable, "-c", script], env=environment, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [sys.executable, "-c", script, expected_error], env=environment, capture_output=True, text=True, check=False
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
