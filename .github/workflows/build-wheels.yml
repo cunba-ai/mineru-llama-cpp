@@ -1,6 +1,8 @@
 name: Build wheels
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main]
     tags: ['v*']
@@ -16,8 +18,41 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: read
+  actions: read
+
+# 连续 PR/main 检查只保留最新提交；标签和手动运行使用独立分组。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch') && github.run_id || '' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch') }}
+
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      # main 只运行快速检查，避免与同一提交的版本标签重复构建。
+      build_wheels: ${{ github.event_name != 'push' || github.ref_type == 'tag' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint GitHub Actions workflows
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check workflow and SDK setup policies
+        run: |
+          node --version
+          cmake --version
+          bash -n tools/setup_linux_gpu.sh
+          pip install packaging pytest pytest-asyncio PyYAML
+          python -m pytest tests/test_publish_workflows.py tests/test_macos_build_policy.py tests/test_wheel_policy.py tests/test_ci_workflows.py tests/test_linux_gpu_setup.py tests/test_build_cache.py -q
+
   diagnose_windows_runtime:
+    needs: [preflight]
     if: github.event_name == 'workflow_dispatch' && inputs.platform == 'windows-runtime'
     runs-on: windows-2022
     steps:
@@ -59,7 +94,8 @@ jobs:
           path: runtime-check/*.json
 
   build_linux_x86_64:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,6 +104,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: manylinux228
       - uses: actions/cache@v4
         with:
           path: |
@@ -90,7 +129,8 @@ jobs:
           path: wheelhouse/*.whl
 
   build_linux_aarch64:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux')
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -99,6 +139,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: manylinux228
       - uses: actions/cache@v4
         with:
           path: |
@@ -121,7 +164,8 @@ jobs:
           path: wheelhouse/*.whl
 
   build_macos:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -135,6 +179,9 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
           xcodebuild -version
           xcrun --show-sdk-version
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: xcode-26.6
       - name: Install cibuildwheel
         run: pip install cibuildwheel==4.3.0
       - name: Build wheels (macOS arm64, Metal)
@@ -155,7 +202,8 @@ jobs:
           path: wheel-audits/*.json
 
   check_macos_older_sdk:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -169,6 +217,9 @@ jobs:
           sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
           xcrun --show-sdk-version
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: xcode-16.4
       - name: Build and check with older SDK
         env:
           CIBW_BUILD: cp312-*
@@ -178,7 +229,8 @@ jobs:
           python tools/verify_macos_wheel.py wheelhouse/*.whl
 
   build_windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -191,6 +243,9 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: msvc-2022
       - uses: actions/cache@v4
         with:
           path: |
@@ -215,7 +270,8 @@ jobs:
           path: wheelhouse/*.whl
 
   build_windows_arm64:
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'windows-arm64'
+    needs: [preflight]
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == 'windows-arm64')
     runs-on: windows-11-arm
     steps:
       - uses: actions/checkout@v4
@@ -228,6 +284,9 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: arm64
+      - uses: ./.github/actions/build-cache
+        with:
+          toolchain: clang-cl-arm64
       - uses: actions/cache@v4
         with:
           path: C:/VulkanSDK-ARM64
@@ -258,13 +317,14 @@ jobs:
 
   validate_wheels:
     needs:
+      - preflight
       - build_linux_x86_64
       - build_linux_aarch64
       - build_macos
       - check_macos_older_sdk
       - build_windows
       - build_windows_arm64
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all'
+    if: needs.preflight.outputs.build_wheels == 'true' && (github.event_name != 'workflow_dispatch' || inputs.platform == 'all')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -278,7 +338,6 @@ jobs:
           path: dist
       - name: Verify five stable-ABI wheels
         run: |
-          pip install packaging abi3audit pytest PyYAML
-          python -m pytest tests/test_publish_workflows.py tests/test_macos_build_policy.py -q
+          pip install packaging abi3audit
           python tools/verify_wheels.py dist
           abi3audit --strict dist/*.whl

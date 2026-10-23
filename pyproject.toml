@@ -25,6 +25,8 @@ wheel.py-api = "cp311"
 wheel.packages = ["src/mineru_llama_cpp"]
 wheel.license-files = ["LICENSE"]
 build-dir = "build"
+# 仅编译 wheel 安装需要的入口；ggml 的依赖会同时构建动态 CPU/GPU 后端。
+build.targets = ["_mineru_llama_cpp", "llama-server"]
 # 显式将本项目许可证纳入源码包，与 wheel 中的许可声明保持一致。
 sdist.include = ["LICENSE"]
 # 排除源码中的 editable 原生产物；wheel 扩展始终由 CMake install 提供。

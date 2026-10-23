@@ -1,0 +1,31 @@
+name: Prepare wheel build caches
+description: Cache cibuildwheel downloads and compiler outputs for one native toolchain.
+inputs:
+  toolchain:
+    description: Toolchain namespace, including the SDK or compiler family.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install sccache
+      uses: mozilla-actions/sccache-action@v0.0.11
+      with:
+        version: v0.18.0
+        # Linux 在 manylinux 容器内输出统计，宿主的独立进程看不到容器统计。
+        disable_annotations: ${{ runner.os == 'Linux' }}
+    - name: Configure host and container cache paths
+      shell: bash
+      run: python tools/setup_ci_cache.py
+    - name: Cache cibuildwheel downloads
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.CIBW_CACHE_PATH }}
+        key: cibw-v1-${{ runner.os }}-${{ runner.arch }}-4.3.0-${{ hashFiles('pyproject.toml') }}
+        restore-keys: cibw-v1-${{ runner.os }}-${{ runner.arch }}-4.3.0-
+    - name: Cache compiler outputs
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.SCCACHE_DIR }}
+        key: sccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.toolchain }}-0.18.0-${{ hashFiles('CMakeLists.txt', 'src/cpp/CMakeLists.txt', 'cmake/**', 'pyproject.toml', 'tools/setup_ci_cache.py', '.github/actions/build-cache/action.yml') }}-${{ github.sha }}
+        # sccache 自身继续核对编译器、源码、头文件和参数，允许复用上一提交的未变对象。
+        restore-keys: sccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.toolchain }}-0.18.0-

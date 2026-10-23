@@ -112,6 +112,27 @@ The aggregate release check requires exactly five wheels and verifies their
 platforms, architectures, ABI tags and required modules. The macOS build
 still includes the Xcode 16.4 compatibility check.
 
+Pull requests targeting `main` run the model-free workflow, wheel-policy and
+SDK-cache checks before the full five-platform build. Pushes to `main` run
+only these fast checks; `v*` tags run the full build, so pushing a release
+commit and its tag does not build the wheels twice. Manual runs retain the
+`platform` selector, including the Windows runtime diagnostic mode. New
+PR/main runs cancel older checks for the same ref; tag and manual runs are
+independent. Linux validates the cached Vulkan SDK before installing any
+SDK build dependencies, avoiding package-repository access on a cache hit.
+
+Build jobs cache cibuildwheel downloads and use sccache 0.18.0 for C/C++
+compilation. Compiler caches are separated by OS, architecture and toolchain
+(including the two Xcode versions), with a 1 GiB limit per job. Linux uses
+the `/host` mount to persist compiler outputs outside the manylinux container.
+Only the Python extension and `llama-server` build targets are requested;
+their dependencies include the runtime libraries and dynamic CPU/GPU modules.
+The existing wheel distribution audits and Python 3.11–3.14 installation
+checks remain enabled.
+GitHub restricts cache visibility by ref: repeated runs of a PR can reuse its
+cache, while a manual `all` build on `main` can populate the default-branch
+caches for later PRs and tags.
+
 ### PyPI publishing
 
 `build-wheels.yml` only builds and validates wheels. `publish-wheels.yml`

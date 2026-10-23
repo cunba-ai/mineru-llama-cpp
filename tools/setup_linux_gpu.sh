@@ -5,21 +5,33 @@ project_root="$(cd "$(dirname "$0")/.." && pwd)"
 tools_prefix="$project_root/.gpu-tools"
 work_dir=/opt/mineru-gpu-build
 export PATH="/opt/python/cp312-cp312/bin:$PATH"
+# 缓存检查必须先于联网安装；热缓存只需镜像自带 Python 和 SDK 本身。
+if [ -x "$tools_prefix/bin/glslc" ] && python - "$tools_prefix" <<'PY'
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+assert re.search(r"#define\s+VK_HEADER_VERSION\s+350\b", (root / "include/vulkan/vulkan_core.h").read_text())
+assert "2026.1" in subprocess.check_output([str(root / "bin/glslc"), "--version"], text=True, timeout=10)
+# Vulkan 和 SPIRV-Headers 均由 wheel 的 CMake 配置使用，残缺缓存需要重建。
+assert any((root / directory / "libvulkan.so").is_file() for directory in ("lib", "lib64"))
+assert (root / "include/spirv/unified1/spirv.hpp").is_file()
+assert any(root.rglob("SPIRV-HeadersConfig.cmake"))
+PY
+then
+    echo "Using cached Vulkan tools"
+    exit 0
+fi
+
+# 只有缓存缺失、版本不符或组件损坏时才安装 SDK 编译依赖。
+# wheel 的 CMake/Ninja 由 scikit-build-core 的隔离构建环境提供。
+rm -rf "$tools_prefix"
 yum install -y git curl tar xz unzip make gcc gcc-c++
 python -m pip install 'cmake==3.31.10' ninja
 export CMAKE_BUILD_PARALLEL_LEVEL="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 mkdir -p "$tools_prefix" "$work_dir"
-# 只有固定 SDK 版本才可复用。
-if [ -x "$tools_prefix/bin/glslc" ]; then
-    if ! python -c 'from pathlib import Path; import re, subprocess, sys; root=Path(sys.argv[1]); assert re.search(r"#define\s+VK_HEADER_VERSION\s+350\b", (root/"include/vulkan/vulkan_core.h").read_text()); assert "2026.1" in subprocess.check_output([str(root/"bin/glslc"), "--version"], text=True)' "$tools_prefix"; then
-        rm -rf "$tools_prefix"
-        mkdir -p "$tools_prefix"
-    fi
-fi
-if [ -x "$tools_prefix/bin/glslc" ]; then
-    echo "Using cached Vulkan tools"
-    exit 0
-fi
 
 # 固定源码版本，重复运行时复用已下载的工具源码。
 clone_tool() {
