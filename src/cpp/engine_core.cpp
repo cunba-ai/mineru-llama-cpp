@@ -385,8 +385,9 @@ EngineCore::GenerateResult EngineCore::generate(const std::string & body_json) {
         // renders the jinja chat template, extracts image_url data URIs into
         // files, and normalizes sampling params into `parsed`. Throws
         // std::runtime_error/std::invalid_argument on bad image_url etc.
-        json parsed = oaicompat_chat_params_parse(body, meta_->chat_params, files);
         const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx_.get_llama_context()));
+        common_chat_session chat_session;
+        json parsed = oaicompat_chat_params_parse(vocab, body, meta_->chat_params, files, chat_session);
         task.params = server_schema::eval_llama_cmpl_schema(
             vocab, params_, meta_->logit_bias_eog, parsed);
         task.params.stream       = false;
@@ -497,8 +498,9 @@ EngineCore::StreamHandle EngineCore::generate_stream(const std::string & body_js
         task.id = reader->get_new_id();
 
         std::vector<raw_buffer> files;
-        json parsed = oaicompat_chat_params_parse(body, meta_->chat_params, files);
         const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx_.get_llama_context()));
+        common_chat_session chat_session;
+        json parsed = oaicompat_chat_params_parse(vocab, body, meta_->chat_params, files, chat_session);
         task.params = server_schema::eval_llama_cmpl_schema(
             vocab, params_, meta_->logit_bias_eog, parsed);
         task.params.stream       = true;
