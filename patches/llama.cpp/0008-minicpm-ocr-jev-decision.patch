@@ -1,0 +1,543 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index a4b4fea..f69f4db 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1187,6 +1187,7 @@ static const std::map<common_decision_type, std::string> COMMON_DECISION_TYPE_NA
+     { COMMON_DECISION_TYPE_LFM2_D1_OMNI,   "lfm2-d1-omni"  },
+     { COMMON_DECISION_TYPE_GRANITE_SWITCH, "granite-switch"},
+     { COMMON_DECISION_TYPE_H2O_LIGHTNING,  "h2o-lightning" },
++    { COMMON_DECISION_TYPE_MINICPM_OCR_JEV, "openbmb-minicpm-ocr-jev" },
+     // for future models, ALWAYS add org name prefix to avoid name collisions, e.g. "orgname-modelname"
+ };
+ 
+@@ -1307,13 +1308,17 @@ common_init_result::common_init_result(common_params & params, bool model_only)
+     // these decision models return a score for each token via the embeddings output
+     // TODO: maybe improve this in the future
+     const auto decision_type = common_get_decision_type(model);
++    // minicpm-ocr-jev reads its class scores from the pooled output, the pooling type is the one of the GGUF
+     if (decision_type == COMMON_DECISION_TYPE_LAYA || decision_type == COMMON_DECISION_TYPE_KEV || decision_type == COMMON_DECISION_TYPE_CLEF ||
+-        decision_type == COMMON_DECISION_TYPE_LFM2_D1_OMNI || decision_type == COMMON_DECISION_TYPE_VLLM_DECISION2) {
++        decision_type == COMMON_DECISION_TYPE_LFM2_D1_OMNI || decision_type == COMMON_DECISION_TYPE_VLLM_DECISION2 ||
++        decision_type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
++        const auto pooling_type = decision_type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV ? LLAMA_POOLING_TYPE_UNSPECIFIED : LLAMA_POOLING_TYPE_NONE;
++
+         params.embedding    = true;
+-        params.pooling_type = LLAMA_POOLING_TYPE_NONE;
++        params.pooling_type = pooling_type;
+ 
+         cparams.embeddings            = true;
+-        cparams.pooling_type          = LLAMA_POOLING_TYPE_NONE;
++        cparams.pooling_type          = pooling_type;
+         cparams.n_outputs_max         = cparams.n_batch;
+         cparams.n_outputs_max_per_seq = 1;
+ 
+diff --git a/common/common.h b/common/common.h
+index 8e3fe2c..e0f226f 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -978,6 +978,7 @@ enum common_decision_type {
+     COMMON_DECISION_TYPE_LFM2_D1_OMNI, // same as laya, other prompt layout
+     COMMON_DECISION_TYPE_GRANITE_SWITCH, // same as openjev, run by the decision aLoRA of granite switch
+     COMMON_DECISION_TYPE_H2O_LIGHTNING, // same as openjev, the labels are read after an answer prefill
++    COMMON_DECISION_TYPE_MINICPM_OCR_JEV, // one score per class, the pooled embeddings output of the last token
+     COMMON_DECISION_TYPE_UNKNOWN, // a decision model of a type that is not supported
+ };
+ 
+diff --git a/conversion/__init__.py b/conversion/__init__.py
+index de3e978..b40936e 100644
+--- a/conversion/__init__.py
++++ b/conversion/__init__.py
+@@ -197,6 +197,7 @@ TEXT_MODEL_MAP: dict[str, str] = {
+     "MiniCPMForCausalLM": "minicpm",
+     "MiniCPMV4_6ForConditionalGeneration": "minicpm",
+     "MiniCPMV4_7ForConditionalGeneration": "minicpm",
++    "MiniCPMOCRForSequenceClassification": "qwen",
+     "MiniCPMOcrForConditionalGeneration": "minicpm",
+     "MiniMaxText01ForCausalLM": "minimax",
+     "MiniMaxM1ForCausalLM": "minimax",
+@@ -365,6 +366,7 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
+     "MiniMaxM3SparseForConditionalGeneration": "minimax",
+     "MiniCPMV4_6ForConditionalGeneration": "minicpm",
+     "MiniCPMV4_7ForConditionalGeneration": "minicpm",
++    "MiniCPMOCRForSequenceClassification": "qwen3vl",
+     "MiniCPMOcrForConditionalGeneration": "minicpm",
+     "Mistral3ForConditionalGeneration": "llava",
+     "Mistral3Model": "llava",
+diff --git a/conversion/qwen.py b/conversion/qwen.py
+index e1013dd..5ec4ab4 100644
+--- a/conversion/qwen.py
++++ b/conversion/qwen.py
+@@ -690,6 +690,52 @@ class Qwen3_5TextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
+         self._try_set_pooling_type()
+ 
+ 
++@ModelBase.register("MiniCPMOCRForSequenceClassification")
++class MiniCPMOCRSeqClsModel(Qwen3_5TextModel):
++    # OCR consistency judge: Qwen3.5 VL trunk with a value head read at the last token
++    # the class scores are [inconsistent, consistent], the softmax temperature is 1
++    model_arch = gguf.MODEL_ARCH.QWEN35
++    no_mtp = True  # the checkpoint has no MTP head
++
++    CLASS_LABELS = ["inconsistent", "consistent"]
++
++    def set_vocab(self):
++        super().set_vocab()
++        self.gguf_writer.add_chat_template([{"name": "systemone", "template": self._systemone_template()}])
++
++    def _systemone_template(self) -> str:
++        # the prompt of the training data, the two images are the original page and the one
++        # rendered from the OCR text; the task is fixed, there is nothing to fill in
++        # the trailing newlines are in an expression, so the template does not drop them
++        return (
++            "<|im_start|>user\n{{ images[0] }}\nOCR文本：\n{{ state }}\n{{ images[1] }}\n"
++            "第一张图是原图，第二张图是上述 OCR 文本渲染得到的图片。\n"
++            "请判断该 OCR 文本及其对应渲染图是否与原图内容一致。\n"
++            "这是一个二分类任务：一致标为 1，不一致标为 0。"
++            "{{ '<|im_end|>\\n<|im_start|>assistant\\n<think>\\n\\n</think>\\n\\n' }}"
++        )
++
++    def set_gguf_parameters(self):
++        super().set_gguf_parameters()
++
++        # the config.json of the checkpoint keeps the one of the base model, it has no num_labels / id2label
++        if "score.weight" not in self.model_tensors:
++            raise ValueError("the checkpoint has no score.weight classification head")
++
++        self.gguf_writer.add_pooling_type(gguf.PoolingType.LAST)
++        self.gguf_writer.add_embedding_length_out(len(self.CLASS_LABELS))
++        self.gguf_writer.add_classifier_output_labels(self.CLASS_LABELS)
++        self.gguf_writer.add_decision_type(gguf.DecisionType.MINICPM_OCR_JEV)
++
++    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
++        if name == "score.weight":
++            if data_torch.shape[0] != len(self.CLASS_LABELS):
++                raise ValueError(f"score.weight must have {len(self.CLASS_LABELS)} rows, got {data_torch.shape[0]}")
++            yield (gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.CLS_OUT] + ".weight", data_torch)
++            return
++        yield from super().modify_tensors(data_torch, name, bid)
++
++
+ def _is_openjev_checkpoint(dir_model: Path) -> bool:
+     return (dir_model / "helper" / "shim.py").is_file() and (dir_model / "config.json").is_file()
+ 
+diff --git a/conversion/qwen3vl.py b/conversion/qwen3vl.py
+index 638bcbb..9458366 100644
+--- a/conversion/qwen3vl.py
++++ b/conversion/qwen3vl.py
+@@ -144,6 +144,16 @@ class Qwen3VLVisionModel(MmprojModel):
+         yield from MmprojModel.modify_tensors(self, data_torch, name, bid)
+ 
+ 
++@ModelBase.register("MiniCPMOCRForSequenceClassification")
++class MiniCPMOCRSeqClsVisionModel(Qwen3VLVisionModel):
++    def set_gguf_parameters(self):
++        super().set_gguf_parameters()
++        # trained with the image budget of its processor, wider than the mtmd default of Qwen-VL
++        size = self.preprocessor_config["size"]
++        self.gguf_writer.add_vision_min_pixels(int(size["shortest_edge"]))
++        self.gguf_writer.add_vision_max_pixels(int(size["longest_edge"]))
++
++
+ @ModelBase.register("Qwen3OmniMoeForConditionalGeneration")
+ @ModelBase.example("Qwen/Qwen3-Omni-30B-A3B-Instruct")
+ class Qwen3OmniMmprojModel(Qwen3VLVisionModel, Qwen25AudioModel):
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index babc8bb..8648d6b 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -6476,6 +6476,7 @@ class DecisionType:
+     LFM2_D1_OMNI = "lfm2-d1-omni"  # same head as laya on a bidirectional LFM2 trunk, other prompt layout
+     GRANITE_SWITCH = "granite-switch"  # same as openjev, run by the decision aLoRA of granite switch
+     H2O_LIGHTNING = "h2o-lightning"  # same as openjev, labels read after an answer prefill
++    MINICPM_OCR_JEV = "openbmb-minicpm-ocr-jev"  # class scores of a value head read at the last token, one fixed task
+ 
+ 
+ class VisionProjectorType:
+diff --git a/tests/test-server-component.cpp b/tests/test-server-component.cpp
+index 642d3f9..2c76e89 100644
+--- a/tests/test-server-component.cpp
++++ b/tests/test-server-component.cpp
+@@ -4,6 +4,8 @@
+ #include "../tools/server/server-decision.h"
+ #include "../tools/server/server-schema.h"
+ 
++#include <algorithm>
++#include <cmath>
+ #include <cstdlib>
+ #include <regex>
+ #include <string>
+@@ -466,6 +468,116 @@ static void test_rerank_template(testing & t) {
+ }
+ 
+ //
++// server_decision_context::format_answer, 2 class scores (minicpm-ocr-jev)
++//
++
++static void test_decision_class_scores(testing & t) {
++    server_decision_context ctx;
++    ctx.type = COMMON_DECISION_TYPE_MINICPM_OCR_JEV;
++
++    const server_decision_question choice = {"q", SERVER_DECISION_QUESTION_CHOICE, json(), {{"0", json()}, {"1", json()}}};
++    const server_decision_question noul   = {"q", SERVER_DECISION_QUESTION_NOUL,   json(), {{"false", json()}, {"true", json()}}};
++
++    const std::vector<std::pair<float, float>> cases = {
++        {0.0f, 0.0f}, {-1.5f, 2.25f}, {3.0f, -0.5f}, {80.0f, -80.0f}, {1000.0f, 1001.0f},
++    };
++    for (const auto & [z0, z1] : cases) {
++        const double p1  = 1.0 / (1.0 + std::exp((double) z0 - (double) z1));
++        const json   a   = ctx.format_answer(choice, {{z0, z1}});
++        const double ap0 = a.at("probabilities").at("0").get<double>();
++        const double ap1 = a.at("probabilities").at("1").get<double>();
++        t.assert_true("p1", std::fabs(ap1 - p1) <= 1e-6);
++        t.assert_true("sum", std::fabs(ap0 + ap1 - 1.0) <= 1e-9);
++        // a tie picks the first class
++        t.assert_equal("choice", std::string(z1 > z0 ? "1" : "0"), a.at("choice").get<std::string>());
++        t.assert_true("confidence", std::fabs(a.at("confidence").get<double>() - (2.0 * std::max(ap0, ap1) - 1.0)) <= 1e-9);
++
++        const json n = ctx.format_answer(noul, {{z0, z1}});
++        t.assert_true("noul is p1", n.at("noul").get<double>() == ap1);
++    }
++
++    for (const float bad : {std::nanf(""), INFINITY}) {
++        bool thrown = false;
++        try {
++            ctx.format_answer(choice, {{bad, 0.0f}});
++        } catch (const std::exception &) {
++            thrown = true;
++        }
++        t.assert_true("nan or +inf", thrown);
++    }
++}
++
++//
++// server_decision_context::parse_questions / parse_state, the request checks of minicpm-ocr-jev
++//
++
++static void test_decision_ocr_jev_validation(testing & t) {
++    server_decision_context ctx;
++    ctx.type = COMMON_DECISION_TYPE_MINICPM_OCR_JEV;
++
++    // only base64-decoded, the image itself is not parsed here
++    const std::string image = "data:image/png;base64,AAAA";
++
++    const json choice = {
++        {"type",     "choice"},
++        {"criteria", json{{"0", nullptr}, {"1", nullptr}}},
++    };
++    const auto questions_of = [](const json & question) {
++        return json{{"state", "some OCR text"}, {"questions", json{{"q", question}}}};
++    };
++    const auto files_of = [&](size_t n) {
++        json files = json::array();
++        for (size_t i = 0; i < n; i++) {
++            files.push_back(image);
++        }
++        return json{{"state", "some OCR text"}, {"files", files}};
++    };
++
++    const auto reject_questions = [&](const char * name, const json & body, const std::string & expected) {
++        std::string error;
++        try {
++            ctx.parse_questions(body);
++        } catch (const std::invalid_argument & e) {
++            error = e.what();
++        }
++        t.assert_true(std::string(name) + ": " + error, error.find(expected) != std::string::npos);
++    };
++    const auto reject_state = [&](const char * name, const json & body, const std::string & expected) {
++        std::vector<raw_buffer> files;
++        std::string error;
++        try {
++            ctx.parse_state(body, files);
++        } catch (const std::invalid_argument & e) {
++            error = e.what();
++        }
++        t.assert_true(std::string(name) + ": " + error, error.find(expected) != std::string::npos);
++    };
++
++    reject_state("state is text", {{"state", 42}}, "\"state\" must be the OCR text");
++
++    // one fixed question, no instructions
++    reject_questions("one question", {{"state", "x"}, {"questions", json{{"a", choice}, {"b", choice}}}},
++        "answers exactly one question");
++    reject_questions("no instructions",
++        questions_of(json{{"type", "choice"}, {"instructions", "judge it"}, {"criteria", json{{"0", nullptr}, {"1", nullptr}}}}),
++        "\"instructions\" is not used by this model");
++
++    // the classes are fixed, so are the criteria
++    reject_questions("criteria are the classes",
++        questions_of(json{{"type", "choice"}, {"criteria", json{{"yes", nullptr}, {"no", nullptr}}}}),
++        "\"criteria\" must be {\"0\": null, \"1\": null}");
++    reject_questions("noul without criteria",
++        questions_of(json{{"type", "noul"}, {"criteria", json{{"false", "no"}, {"true", "yes"}}}}),
++        "\"criteria\" is not supported for a noul question");
++    reject_questions("choice or noul only",
++        questions_of(json{{"type", "score"}, {"criteria", json::array({"low", "high"})}}),
++        "only choice and noul questions are supported");
++
++    // the prompt has the original image, then the one rendered from the OCR text
++    reject_state("two images", files_of(1), "this model needs exactly 2 images");
++    reject_state("two images, three given", files_of(3), "this model needs exactly 2 images");
++}
++
+ // server_decision_context: the recursive functions stop at RECURSIVE_LIMIT
+ //
+ 
+@@ -573,6 +685,8 @@ int main(int argc, char ** argv) {
+     t.test("server_pipe",   test_server_pipe);
+     t.test("decision_escape", test_decision_escape);
+     t.test("rerank_template", test_rerank_template);
++    t.test("decision_class_scores", test_decision_class_scores);
++    t.test("decision_ocr_jev_validation", test_decision_ocr_jev_validation);
+     t.test("decision_depth",  test_decision_depth);
+     t.test("glob_match",      test_glob_match);
+     t.test("dry_sequence_breakers", test_dry_sequence_breakers);
+diff --git a/tools/server/README.md b/tools/server/README.md
+index 8e27e37..e7487c5 100644
+--- a/tools/server/README.md
++++ b/tools/server/README.md
+@@ -1842,13 +1842,17 @@ Follows the [TypeSafe API](https://docs.typesafe.ai/api), streaming is not suppo
+ 
+ The questions of a request are answered independently, an answer does not depend on the other questions. The exception is clef: it reads all the questions in one prompt and decides them jointly.
+ 
+-The number of options of a `choice` question is limited by the model, for example: 52 for openjev, 255 for granite-switch, laya, clef, pplx-decider, vllm-decision2, vllm-d3, lfm2-d1, lfm2-d1-omni and h2o-lightning. For laya, long questions and options are truncated to the token budget the model was trained with.
++The number of options of a `choice` question is limited by the model, for example: 52 for openjev, 255 for granite-switch, laya, clef, pplx-decider, vllm-decision2, vllm-d3, lfm2-d1, lfm2-d1-omni and h2o-lightning, 2 for openbmb-minicpm-ocr-jev. For laya, long questions and options are truncated to the token budget the model was trained with.
+ 
+ For laya, clef, vllm-d3 and lfm2-d1-omni, the whole prompt is evaluated in one batch: it must fit in `--ubatch-size`. An lfm2-d1-omni prompt is cut to 16384 tokens. For vllm-decision2, the options of a question and the end of the prompt must fit in one batch. An h2o-lightning state longer than 32000 tokens keeps its first and last 16000 tokens. A server that runs clef only serves this endpoint, text generation is not available. A decision model that is also a text model, such as granite-switch, serves both and reports `["text", "decisions"]`.
+ 
++openbmb-minicpm-ocr-jev answers one fixed question: is an OCR text, rendered as an image, consistent with the original image? `state` is the OCR text, as a string, special tokens written in it are escaped. `files` (or `images`) has exactly 2 images: the original, then the rendered one, both are required. The request has one question and no `instructions`: the task is part of the prompt of the model, so a request that sends one is rejected. It is either a `choice` with the `criteria` `{"0": null, "1": null}`, where `1` means consistent, or a `noul` without `criteria`, which returns the probability of `1`. The model has no LM head, so text generation is not available.
++
++Its prompt carries two images, so it is much longer than a text-only one: size the context with `-c` and the batch with `--batch-size`/`--ubatch-size` accordingly. The prompt of a request is evaluated in batches like a normal causal model, the class scores are read from the pooled output of its last token.
++
+ *Image input:*
+ 
+-Image input needs a model that supports it (for example: openjev, clef, pplx-decider, vllm-d3, lfm2-d1, lfm2-d1-omni, h2o-lightning) and its multimodal projector, see `--mmproj`.
++Image input needs a model that supports it (for example: openjev, clef, pplx-decider, vllm-d3, lfm2-d1, lfm2-d1-omni, h2o-lightning, openbmb-minicpm-ocr-jev) and its multimodal projector, see `--mmproj`.
+ 
+ Images can be given in two ways, and both can be used in the same request:
+ 
+diff --git a/tools/server/server-common.cpp b/tools/server/server-common.cpp
+index 80a9f2d..c3550de 100644
+--- a/tools/server/server-common.cpp
++++ b/tools/server/server-common.cpp
+@@ -219,6 +219,7 @@ std::vector<std::string> server_model_output_modalities(common_decision_type dec
+         case COMMON_DECISION_TYPE_LFM2_D1:
+         case COMMON_DECISION_TYPE_LFM2_D1_OMNI:
+         case COMMON_DECISION_TYPE_H2O_LIGHTNING:
++        case COMMON_DECISION_TYPE_MINICPM_OCR_JEV:
+             out = {"decisions"};
+             break;
+         case COMMON_DECISION_TYPE_GRANITE_SWITCH:
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 9043fa2..da0d58f 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2473,7 +2473,14 @@ private:
+ 
+         const auto & decision = slot.task->decision;
+ 
+-        if (!decision.labels.empty()) {
++        if (decision.pooled) {
++            const float * embd = llama_get_embeddings_seq(slot.ctx_tgt, slot.id);
++            if (embd == nullptr) {
++                send_error(slot, "failed to get the class scores", ERROR_TYPE_SERVER);
++                return;
++            }
++            res->scores.assign(embd, embd + llama_model_n_embd_out(model_tgt));
++        } else if (!decision.labels.empty()) {
+             const float * logits = llama_get_logits_ith(slot.ctx_tgt, i_batch);
+             if (logits == nullptr) {
+                 send_error(slot, "failed to get logits", ERROR_TYPE_SERVER);
+@@ -2964,6 +2971,11 @@ private:
+             case SERVER_TASK_TYPE_TTS:
+             case SERVER_TASK_TYPE_DECISION:
+                 {
++                    if (task.need_sampling() && !decision.can_generate()) {
++                        send_error(task, "This model is a decision model without text generation, use /v1/systemone", ERROR_TYPE_NOT_SUPPORTED);
++                        break;
++                    }
++
+                     // special case: if input is provided via CLI, tokenize it first
+                     // otherwise, no need to tokenize as it's already done inside the HTTP thread
+                     if (task.cli) {
+diff --git a/tools/server/server-decision.cpp b/tools/server/server-decision.cpp
+index 5fd7585..06234cd 100644
+--- a/tools/server/server-decision.cpp
++++ b/tools/server/server-decision.cpp
+@@ -204,6 +204,15 @@ void server_decision_context::init(const llama_model * model) {
+         }
+         n_options_max   = labels.size();
+         noul_true_first = true;
++    } else if (model_type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
++        // the classes come from the GGUF classifier labels, the request API is binary: [inconsistent, consistent]
++        const uint32_t n_classes = llama_model_n_cls_out(model);
++        if (n_classes != 2 || llama_model_n_embd_out(model) != (int32_t) n_classes) {
++            throw std::runtime_error(string_format("decision model must have 2 classifier labels and output one score per class, got %u labels and %d scores",
++                n_classes, llama_model_n_embd_out(model)));
++        }
++        n_options_max = n_classes;
++        choice_sorted = true;
+     } else {
+         throw std::runtime_error("unsupported decision model type: " + type_name);
+     }
+@@ -231,6 +240,9 @@ std::vector<server_decision_question> server_decision_context::parse_questions(c
+     if (!body.contains("questions") || !body.at("questions").is_object() || body.at("questions").empty()) {
+         throw std::invalid_argument("\"questions\" must be a non-empty object");
+     }
++    if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV && body.at("questions").size() != 1) {
++        throw std::invalid_argument("this model answers exactly one question");
++    }
+ 
+     std::vector<server_decision_question> questions;
+     for (const auto & [id, q] : body.at("questions").items()) {
+@@ -244,7 +256,9 @@ std::vector<server_decision_question> server_decision_context::parse_questions(c
+         // h2o-lightning: the instructions can be left out, the template has a default, and the type defaults to choice
+         const bool is_h2o = type == COMMON_DECISION_TYPE_H2O_LIGHTNING;
+         const json instructions = q.contains("instructions") ? q.at("instructions") : (is_h2o ? json(std::string()) : json());
+-        if (instructions.is_null() && type != COMMON_DECISION_TYPE_VLLM_D3 && !is_h2o) {
++        // minicpm-ocr-jev answers one fixed question, the prompt is entirely in the template
++        const bool is_ocr_jev = type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV;
++        if (instructions.is_null() && type != COMMON_DECISION_TYPE_VLLM_D3 && !is_h2o && !is_ocr_jev) {
+             throw err("\"instructions\" must be provided");
+         }
+         if (strict_payload && (!decision_is_payload(instructions) || instructions == "")) {
+@@ -322,6 +336,26 @@ std::vector<server_decision_question> server_decision_context::parse_questions(c
+             throw err("\"type\" must be one of: choice, score, noul");
+         }
+ 
++        // the classes are fixed: "0" is inconsistent, "1" is consistent
++        if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
++            // the task text is in the template, an instructions from the request would be dropped
++            if (!instructions.is_null()) {
++                throw err("\"instructions\" is not used by this model, the task is part of its prompt");
++            }
++            if (question.type == SERVER_DECISION_QUESTION_CHOICE) {
++                const auto & opts = question.options;
++                if (opts.size() != 2 || opts[0].key != "0" || opts[1].key != "1" || !opts[0].description.is_null() || !opts[1].description.is_null()) {
++                    throw err("\"criteria\" must be {\"0\": null, \"1\": null}");
++                }
++            } else if (question.type == SERVER_DECISION_QUESTION_NOUL) {
++                if (!criteria.is_null()) {
++                    throw err("\"criteria\" is not supported for a noul question");
++                }
++            } else {
++                throw err("only choice and noul questions are supported");
++            }
++        }
++
+         if (question.options.size() > n_options_max) {
+             throw err(string_format("too many options (%zu), this model supports at most %zu", question.options.size(), n_options_max));
+         }
+@@ -360,6 +394,9 @@ static void decision_load_audio(const json & data, std::vector<raw_buffer> & fil
+ }
+ 
+ json server_decision_context::parse_state(const json & body, std::vector<raw_buffer> & files) const {
++    if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV && !body.at("state").is_string()) {
++        throw std::invalid_argument("\"state\" must be the OCR text");
++    }
+     if (body.contains("videos") && !body.at("videos").is_null() && !body.at("videos").empty()) {
+         throw std::invalid_argument("\"videos\" is not supported");
+     }
+@@ -376,6 +413,11 @@ json server_decision_context::parse_state(const json & body, std::vector<raw_buf
+         }
+     }
+ 
++    // the prompt has the original image, then the image rendered from the OCR text
++    if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV && files.size() != 2) {
++        throw std::invalid_argument(string_format("this model needs exactly 2 images (the original, then the rendered one), got %zu", files.size()));
++    }
++
+     const json & state = body.at("state");
+     const bool is_wrapped = state.is_object() && state.contains("messages");
+     const json & messages = is_wrapped ? state.at("messages") : state;
+@@ -1040,6 +1082,11 @@ std::string server_decision_context::render(
+         inp["instructions"] = decision_kev_text(question.instructions);
+     }
+ 
++    // the OCR text must not be parsed as special tokens
++    if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
++        inp["state"] = server_decision_escape_special_tokens(state.get<std::string>());
++    }
++
+     // the input must not contain the marker of the options
+     if (!text_marker.empty()) {
+         inp = decision_replace_text(inp, text_marker, " ");
+@@ -1092,6 +1139,12 @@ void server_decision_context::fill_task(
+ 
+     const std::string prompt = render(state, questions, question, variant, files.size());
+ 
++    if (type == COMMON_DECISION_TYPE_MINICPM_OCR_JEV) {
++        task.tokens          = process_mtmd_prompt(mctx, prompt, files, init_opt);
++        task.decision.pooled = true;
++        return;
++    }
++
+     if (type == COMMON_DECISION_TYPE_OPENJEV || type == COMMON_DECISION_TYPE_GRANITE_SWITCH || type == COMMON_DECISION_TYPE_LEV || type == COMMON_DECISION_TYPE_NIMBLE || type == COMMON_DECISION_TYPE_PPLX_DECIDER || type == COMMON_DECISION_TYPE_VLLM_D3 ||
+         type == COMMON_DECISION_TYPE_H2O_LIGHTNING) {
+         // lev reads the ratings of a noul question at its first labels, not at the digits
+@@ -1531,8 +1584,8 @@ json server_decision_context::format_answer(const server_decision_question & que
+         if (s.size() != n) {
+             throw std::runtime_error("decision result does not match the number of options");
+         }
+-        // a joint head returns NaN if it could not use the decision order
+-        if (std::any_of(s.begin(), s.end(), [](float v) { return std::isnan(v); })) {
++        // a joint head returns NaN if it could not use the decision order, +inf would make the softmax NaN
++        if (std::any_of(s.begin(), s.end(), [](float v) { return std::isnan(v) || v == INFINITY; })) {
+             throw std::runtime_error("the model could not evaluate the decision");
+         }
+         std::vector<double> logits(s.begin(), s.end());
+diff --git a/tools/server/server-decision.h b/tools/server/server-decision.h
+index b631099..45933ff 100644
+--- a/tools/server/server-decision.h
++++ b/tools/server/server-decision.h
+@@ -3,6 +3,7 @@
+ #include "server-common.h"
+ #include "server-task.h"
+ 
++#include <algorithm>
+ #include <map>
+ #include <memory>
+ #include <string>
+@@ -68,12 +69,19 @@ struct server_decision_context {
+             case COMMON_DECISION_TYPE_LFM2_D1:
+             case COMMON_DECISION_TYPE_LFM2_D1_OMNI:
+             case COMMON_DECISION_TYPE_H2O_LIGHTNING:
++            case COMMON_DECISION_TYPE_MINICPM_OCR_JEV:
+                 return true;
+             default:
+                 return false;
+         }
+     }
+ 
++    // false for a decision-only model, it serves no text generation
++    bool can_generate() const {
++        const auto out = server_model_output_modalities(type, true, false);
++        return std::find(out.begin(), out.end(), "text") != out.end();
++    }
++
+     // throw std::invalid_argument on bad input
+     std::vector<server_decision_question> parse_questions(const json & body) const;
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index d6b6f4b..daefeb4 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -197,6 +197,9 @@ struct server_task {
+         // if set, embeddings is [q | k], and the output is instead the scaled dot product of q[pointer] and k[marker]
+         int32_t                  pointer = -1;
+ 
++        // if set, the outputs are the pooled embeddings of the sequence, one score per class
++        bool                     pooled = false;
++
+         // first prompt position that is read, -1 if none
+         int32_t pos_first() const {
+             int32_t pos = pointer;
+@@ -238,7 +241,7 @@ struct server_task {
+             case SERVER_TASK_TYPE_RERANK:
+                 return true;
+             case SERVER_TASK_TYPE_DECISION:
+-                return !decision.markers.empty() || !decision.order.empty();
++                return !decision.markers.empty() || !decision.order.empty() || decision.pooled;
+             default:
+                 return false;
+         }
