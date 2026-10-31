@@ -1,0 +1,347 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index ce3df1a..4337227 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2170,6 +2170,26 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+             params.sampling.dry_penalty_last_n = value;
+         }
+     ).set_sampling());
++    add_opt(common_arg(
++        {"--no-repeat-ngram-size"}, "N",
++        string_format("hard-ban n-grams of this length that already occurred in the last --no-repeat-ngram-window tokens (default: %d, < 2 = disabled, 35 is a good value)", params.sampling.no_repeat_ngram_size),
++        [](common_params & params, int value) {
++            if (value < 0) {
++                throw std::runtime_error(string_format("error: invalid no-repeat-ngram-size = %d\n", value));
++            }
++            params.sampling.no_repeat_ngram_size = value;
++        }
++    ).set_sampling());
++    add_opt(common_arg(
++        {"--no-repeat-ngram-window"}, "N",
++        string_format("how many recent tokens to search for repeated n-grams (default: %d, 0 = entire context)", params.sampling.no_repeat_ngram_window),
++        [](common_params & params, int value) {
++            if (value < 0) {
++                throw std::runtime_error(string_format("error: invalid no-repeat-ngram-window = %d\n", value));
++            }
++            params.sampling.no_repeat_ngram_window = value;
++        }
++    ).set_sampling());
+     add_opt(common_arg(
+         {"--dry-sequence-breaker"}, "STRING",
+         string_format("add sequence breaker for DRY sampling, clearing out default breakers (%s) in the process; use \"none\" to not use any sequence breakers\n",
+diff --git a/common/common.h b/common/common.h
+index e0f226f..9c3cf8d 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -249,6 +249,8 @@ struct common_params_sampling {
+     float   dry_base           = 1.75f;  // 0.0 = disabled;      multiplier * base ^ (length of sequence before token - allowed length)
+     int32_t dry_allowed_length = 2;      // tokens extending repetitions beyond this receive penalty
+     int32_t dry_penalty_last_n = 64;     // how many tokens to scan for repetitions (0 = disable penalty)
++    int32_t no_repeat_ngram_size   = 0;  // 0 = disabled; ban n-grams of this length that already occurred (35 is a good value)
++    int32_t no_repeat_ngram_window = 0;  // how many recent tokens to search for repeated n-grams (0 = entire context)
+     float   adaptive_target    = -1.0f;  // select tokens near this probability (valid range 0.0 to 1.0; negative = disabled)
+     float   adaptive_decay     = 0.90f;  // EMA decay for adaptation; history ≈ 1/(1-decay) tokens (0.0 - 0.99)
+     int32_t mirostat           = 0;      // 0 = disabled, 1 = mirostat, 2 = mirostat 2.0
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 564fa9c..a80f752 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -173,15 +173,17 @@ struct common_sampler {
+ };
+ 
+ std::string common_params_sampling::print() const {
+-    char result[1024];
++    char result[1536];
+ 
+     snprintf(result, sizeof(result),
+             "\trepeat_last_n = %d, repeat_penalty = %.3f, frequency_penalty = %.3f, presence_penalty = %.3f\n"
+             "\tdry_multiplier = %.3f, dry_base = %.3f, dry_allowed_length = %d, dry_penalty_last_n = %d\n"
++            "\tno_repeat_ngram_size = %d, no_repeat_ngram_window = %d\n"
+             "\ttop_k = %d, top_p = %.3f, min_p = %.3f, xtc_probability = %.3f, xtc_threshold = %.3f, typical_p = %.3f, top_n_sigma = %.3f, temp = %.3f\n"
+             "\tmirostat = %d, mirostat_lr = %.3f, mirostat_ent = %.3f, adaptive_target = %.3f, adaptive_decay = %.3f",
+             penalty_last_n, penalty_repeat, penalty_freq, penalty_present,
+             dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n,
++            no_repeat_ngram_size, no_repeat_ngram_window,
+             top_k, top_p, min_p, xtc_probability, xtc_threshold, typ_p, top_n_sigma, temp,
+             mirostat, mirostat_eta, mirostat_tau, adaptive_target, adaptive_decay);
+ 
+@@ -341,6 +343,12 @@ struct common_sampler * common_sampler_init(
+         }
+     }
+ 
++    // hard ban of repeated n-grams - equivalent to the NGramPerReqLogitsProcessor
++    // that the official DeepSeek-OCR / Unlimited-OCR vLLM recipe enables
++    if (params.no_repeat_ngram_size >= 2) {
++        samplers.push_back(llama_sampler_init_no_repeat_ngram(params.no_repeat_ngram_size, params.no_repeat_ngram_window));
++    }
++
+     if (params.mirostat == 0) {
+ 
+         bool use_adaptive_p = false; // see below
+diff --git a/include/llama.h b/include/llama.h
+index ae54e66..d010f87 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1564,6 +1564,25 @@ extern "C" {
+                                float   penalty_freq,     // must be finite, 0.0 = disabled
+                                float   penalty_present); // must be finite, 0.0 = disabled
+ 
++    /// no-repeat n-gram: ban any token that would recreate an n-gram of length `ngram_size`
++    /// which has already occurred within the last `ngram_window` tokens.
++    ///
++    /// unlike the penalties and dry samplers (which are soft, additive penalties), this is a
++    /// hard constraint: the logits of the banned tokens are set to -inf. that makes it able to
++    /// break the degenerate repetition loops that some models fall into, where no reasonable
++    /// penalty strength is enough, e.g. OCR models emitting `<det>` coordinate tokens forever.
++    ///
++    /// this matches the widely used `no_repeat_ngram_size` option of HF transformers and the
++    /// `NGramPerReqLogitsProcessor` that the official DeepSeek-OCR / Unlimited-OCR vLLM recipe
++    /// enables with `ngram_size = 35, window_size = 128`.
++    ///
++    /// @param ngram_size   length of the n-grams to ban (values < 2 disable the sampler)
++    /// @param ngram_window how many recent tokens to search (0 = the entire context)
++    ///
++    LLAMA_API struct llama_sampler * llama_sampler_init_no_repeat_ngram(
++                             int32_t   ngram_size,
++                             int32_t   ngram_window);
++
+     /// maximum number of distinct DRY sequence breakers, duplicates not counted
+     /// processing each breaker scans the entire vocabulary, so the init cost is O(num_breakers x n_vocab)
+     #define LLAMA_DRY_MAX_SEQ_BREAKERS 64
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+index 9004efa..b07414a 100644
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -3231,6 +3231,145 @@ struct llama_sampler * llama_sampler_init_penalties(
+     );
+ }
+ 
++// no-repeat n-gram
++//
++// bans any token that would recreate an n-gram of length `ngram_size` which has already
++// occurred within the last `ngram_window` accepted tokens. with ngram_window == 0 the whole
++// context is searched.
++//
++// this is the llama.cpp equivalent of `no_repeat_ngram_size` from HF transformers and of the
++// `NGramPerReqLogitsProcessor` enabled by the official DeepSeek-OCR / Unlimited-OCR recipe:
++//     https://github.com/baidu/Unlimited-OCR
++// with `ngram_size = 35, window_size = 128`. unlike the soft penalties/dry samplers, the tokens
++// that would extend a repeated n-gram are hard-banned (logit = -INFINITY), which is what makes it
++// able to break long degenerate repetition loops.
++
++struct llama_sampler_no_repeat_ngram {
++    const int32_t ngram_size;
++    const int32_t ngram_window; // 0 = unlimited
++
++    // the last `ngram_window` accepted tokens (the entire context if ngram_window == 0)
++    std::vector<llama_token> hist;
++
++    llama_sampler_no_repeat_ngram(int32_t ngram_size, int32_t ngram_window)
++        : ngram_size(ngram_size), ngram_window(ngram_window) {
++        if (ngram_window > 0) {
++            hist.reserve(ngram_window);
++        }
++    }
++
++    static bool is_disabled(int32_t ngram_size) {
++        return ngram_size < 2;
++    }
++
++    void accept(llama_token token) {
++        hist.push_back(token);
++
++        if (ngram_window > 0 && (int32_t) hist.size() > ngram_window) {
++            hist.erase(hist.begin());
++        }
++    }
++
++    void reset() {
++        hist.clear();
++    }
++};
++
++static const char * llama_sampler_no_repeat_ngram_name(const struct llama_sampler * /*smpl*/) {
++    return "no-repeat-ngram";
++}
++
++static void llama_sampler_no_repeat_ngram_accept(struct llama_sampler * smpl, llama_token token) {
++    auto * ctx = (llama_sampler_no_repeat_ngram *) smpl->ctx;
++
++    ctx->accept(token);
++}
++
++static void llama_sampler_no_repeat_ngram_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
++    const auto * ctx = (const llama_sampler_no_repeat_ngram *) smpl->ctx;
++
++    const int32_t n = ctx->ngram_size;
++    const size_t  m = ctx->hist.size();
++
++    if (m < (size_t) n) {
++        return;
++    }
++
++    // the (n-1)-token suffix that the sampled token would extend into a full n-gram
++    const llama_token * suffix = ctx->hist.data() + (m - (size_t) (n - 1));
++
++    // ban every token that followed an earlier occurrence of that suffix
++    for (size_t i = 0; i + (size_t) n <= m; ++i) {
++        if (ctx->hist[i] != suffix[0]) {
++            continue; // cheap pre-check before the full comparison
++        }
++
++        if (n > 2 && memcmp(ctx->hist.data() + i + 1, suffix + 1, (size_t) (n - 2) * sizeof(llama_token)) != 0) {
++            continue;
++        }
++
++        const llama_token banned = ctx->hist[i + n - 1];
++
++        for (size_t j = 0; j < cur_p->size; ++j) {
++            if (cur_p->data[j].id == banned) {
++                cur_p->data[j].logit = -INFINITY;
++                break;
++            }
++        }
++    }
++}
++
++static void llama_sampler_no_repeat_ngram_reset(struct llama_sampler * smpl) {
++    auto * ctx = (llama_sampler_no_repeat_ngram *) smpl->ctx;
++
++    ctx->reset();
++}
++
++static struct llama_sampler * llama_sampler_no_repeat_ngram_clone(const struct llama_sampler * smpl) {
++    const auto * ctx = (const llama_sampler_no_repeat_ngram *) smpl->ctx;
++
++    auto * result = llama_sampler_init_no_repeat_ngram(ctx->ngram_size, ctx->ngram_window);
++
++    // copy the state
++    ((llama_sampler_no_repeat_ngram *) result->ctx)->hist = ctx->hist;
++
++    return result;
++}
++
++static void llama_sampler_no_repeat_ngram_free(struct llama_sampler * smpl) {
++    delete (llama_sampler_no_repeat_ngram *) smpl->ctx;
++}
++
++static struct llama_sampler_i llama_sampler_no_repeat_ngram_i = {
++    /* .name              = */ llama_sampler_no_repeat_ngram_name,
++    /* .accept            = */ llama_sampler_no_repeat_ngram_accept,
++    /* .apply             = */ llama_sampler_no_repeat_ngram_apply,
++    /* .reset             = */ llama_sampler_no_repeat_ngram_reset,
++    /* .clone             = */ llama_sampler_no_repeat_ngram_clone,
++    /* .free              = */ llama_sampler_no_repeat_ngram_free,
++    /* .backend_init      = */ nullptr,
++    /* .backend_accept    = */ nullptr,
++    /* .backend_apply     = */ nullptr,
++    /* .backend_set_input = */ nullptr,
++    /* .backend_reset     = */ nullptr,
++    /* .copy_state        = */ nullptr,
++};
++
++struct llama_sampler * llama_sampler_init_no_repeat_ngram(
++        int32_t ngram_size,
++        int32_t ngram_window) {
++    if (llama_sampler_no_repeat_ngram::is_disabled(ngram_size)) {
++        return llama_sampler_init_empty("?no-repeat-ngram");
++    }
++
++    ngram_window = std::max(ngram_window, 0);
++
++    return llama_sampler_init(
++        /* .iface = */ &llama_sampler_no_repeat_ngram_i,
++        /* .ctx   = */ new llama_sampler_no_repeat_ngram(ngram_size, ngram_window)
++    );
++}
++
+ // top-n-sigma
+ 
+ struct llama_sampler_top_n_sigma {
+diff --git a/tests/test-sampling.cpp b/tests/test-sampling.cpp
+index 353a5a1..d2f440c 100644
+--- a/tests/test-sampling.cpp
++++ b/tests/test-sampling.cpp
+@@ -211,6 +211,27 @@ static void test_dry(
+     tester.check();
+ }
+ 
++static void test_no_repeat_ngram(
++    const std::vector<float> & probs, const std::vector<llama_token> & last_tokens,
++    const std::vector<float> & probs_expected, int32_t ngram_size, int32_t ngram_window
++) {
++    GGML_ASSERT(probs.size() == probs_expected.size());
++
++    sampler_tester tester(probs, probs_expected);
++
++    auto * sampler = llama_sampler_init_no_repeat_ngram(ngram_size, ngram_window);
++
++    for (size_t i = 0; i < last_tokens.size(); i++) {
++        llama_sampler_accept(sampler, last_tokens[i]);
++    }
++
++    DUMP(&tester.cur_p);
++    tester.apply(sampler);
++    tester.apply(llama_sampler_init_dist(0));
++    DUMP(&tester.cur_p);
++    tester.check();
++}
++
+ static void test_top_n_sigma(const std::vector<float> & probs, const std::vector<float> & probs_expected, int n) {
+     sampler_tester tester(probs, probs_expected);
+ 
+@@ -392,6 +413,20 @@ int main(void) {
+     test_dry({0.2f, 0.2f, 0.2f, 0.2f, 0.2f}, {0, 1, 2, 0, 1}, {0.241818f, 0.241818f, 0.032727f, 0.241818f, 0.241818f}, 2.0f, 1.1f, 2, 5, {});
+     test_dry({0.2f, 0.2f, 0.2f, 0.2f, 0.2f}, {0, 1, 2, 3, 4, 0, 1}, {0.2f, 0.2f, 0.2f, 0.2f, 0.2f}, 1.0f, 1.1f, 4, 7, {});
+ 
++    printf("no-repeat n-gram should ban the tokens that would extend a repeated n-gram:\n");
++    // ngram_size < 2 disables the sampler
++    test_no_repeat_ngram({0.1f, 0.2f, 0.3f, 0.4f}, {1, 2, 3, 1, 2}, {0.1f, 0.2f, 0.3f, 0.4f}, 1, 0);
++    // the 3-gram [1,2,3] already occurred -> token 3 is banned
++    test_no_repeat_ngram({0.1f, 0.2f, 0.3f, 0.4f}, {1, 2, 3, 4, 1, 2}, {0.1f/0.6f, 0.2f/0.6f, 0.3f/0.6f, 0.0f}, 3, 0);
++    // with ngram_window = 3 the earlier occurrence has fallen out of the window -> nothing is banned
++    test_no_repeat_ngram({0.1f, 0.2f, 0.3f, 0.4f}, {1, 2, 3, 4, 1, 2}, {0.1f, 0.2f, 0.3f, 0.4f}, 3, 3);
++    // ngram_size = 2 bans every successor seen for the last token
++    test_no_repeat_ngram({0.05f, 0.10f, 0.15f, 0.20f, 0.25f, 0.25f}, {1, 4, 1, 5, 1}, {0.1f, 0.2f, 0.3f, 0.4f, 0.0f, 0.0f}, 2, 0);
++    // a repeating block [2,3,4,5,6] must not be able to start its third iteration:
++    // the history ends with [6,2,3], so the 4-gram [6,2,3,4] is already present and token 4 is banned
++    test_no_repeat_ngram({0.05f, 0.10f, 0.10f, 0.15f, 0.20f, 0.20f, 0.20f}, {2, 3, 4, 5, 6, 2, 3, 4, 5, 6, 2, 3},
++                         {0.05f/0.80f, 0.10f/0.80f, 0.10f/0.80f, 0.15f/0.80f, 0.0f, 0.20f/0.80f, 0.20f/0.80f}, 4, 0);
++
+     test_top_n_sigma({0.1f, 0.2f, 0.3f, 0.4f}, {0.0f, 0.0f, 0.428571f, 0.571429f}, 1.00f);
+     test_top_n_sigma({0.1f, 0.2f, 0.3f, 0.4f}, {0.1f, 0.2f, 0.3f, 0.4f}, 0.00f); // top_n_sigma == 0 now represents a no-op rather than greedy decoding as of PR#13345
+     test_top_n_sigma({0.1f, 0.2f, 0.3f, 0.4f}, {0.1f, 0.2f, 0.3f, 0.4f}, 3.00f);
+diff --git a/tools/server/README.md b/tools/server/README.md
+index e7487c5..33da109 100644
+--- a/tools/server/README.md
++++ b/tools/server/README.md
+@@ -563,6 +563,10 @@ These words will not be included in the completion, so make sure to add them to
+ 
+ `dry_penalty_last_n`: How many tokens to scan for repetitions. Default: `64`, where `0` is disabled.
+ 
++`no_repeat_ngram_size`: Ban any n-gram of this length that has already occurred in the last `no_repeat_ngram_window` tokens. Unlike `repeat_penalty`/`dry_multiplier` this is a hard constraint (the logits of the banned tokens are set to `-inf`), which is what makes it able to stop degenerate repetition loops. Equivalent to the `NGramPerReqLogitsProcessor` that the official DeepSeek-OCR / Unlimited-OCR vLLM recipe enables with `35`. Default: `0`, where `< 2` is disabled.
++
++`no_repeat_ngram_window`: How many recent tokens to search for repeated n-grams for `no_repeat_ngram_size`. The DeepSeek-OCR / Unlimited-OCR recipe uses `128` (use a larger window, e.g. `1024`, for long multi-page documents). Default: `0`, where `0` means the entire context.
++
+ `dry_sequence_breakers`: Specify an array of sequence breakers for DRY sampling. Only a JSON array of strings is accepted. At most 64 distinct breakers, duplicates are ignored. Default: `['\n', ':', '"', '*']`
+ 
+ `xtc_probability`: Set the chance for token removal via XTC sampler. Default: `0.0`, which is disabled.
+diff --git a/tools/server/server-schema.cpp b/tools/server/server-schema.cpp
+index 0a14a96..d9c189f 100644
+--- a/tools/server/server-schema.cpp
++++ b/tools/server/server-schema.cpp
+@@ -156,6 +156,14 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
+         ->set_hard_limits(0, INT32_MAX)
+         ->set_desc("How many tokens to scan for repetitions (0 = disabled)"));
+ 
++    add((new field_num("no_repeat_ngram_size", params.sampling.no_repeat_ngram_size))
++        ->set_hard_limits(0, INT32_MAX)
++        ->set_desc("Ban any n-gram of this length that already occurred in the last `no_repeat_ngram_window` tokens (< 2 = disabled, 35 is a good value)"));
++
++    add((new field_num("no_repeat_ngram_window", params.sampling.no_repeat_ngram_window))
++        ->set_hard_limits(0, INT32_MAX)
++        ->set_desc("How many recent tokens to search for repeated n-grams for `no_repeat_ngram_size` (0 = entire context)"));
++
+     add((new field_num("mirostat", params.sampling.mirostat))
+         ->set_limits(0, 2)
+         ->set_desc("Enable Mirostat sampling, controlling perplexity during text generation (0 = disabled, 1 = Mirostat, 2 = Mirostat 2.0)"));
